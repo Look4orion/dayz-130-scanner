@@ -58,7 +58,7 @@ const PATTERNS = [
   ['BREAK', 'modded class GameConstants (fails to compile on 1.30 Exp, DZEXP-93)', re('modded\\s+class\\s+GameConstants\\b')],
   ['RISK', 'FindFile on $profile/$mission/$saves lists the game folder on 1.30 (DZEXP-134)', re('FindFile\\s*\\([^;]*\\$(profile|mission|saves)', 'I')],
   ['RISK', 'FindFile used (folder listing broken for prefixed/absolute paths on 1.30)', re('\\bFindFile\\s*\\(')],
-  ['RISK', 'ChangeGameFocus (global focus freezes input on 1.30 client)', re('\\bChangeGameFocus\\s*\\(')],
+  ['RISK', 'ChangeGameFocus with no device (global focus freezes input on 1.30 client)', re('\\bChangeGameFocus\\s*\\(\\s*(?:[^,();]|\\([^()]*\\))*\\)')],
   ['RISK', 'GetFluidCapacityScript returns int on 1.30', re('\\bGetFluidCapacityScript\\b')],
   // Silent breakers: compile on 1.30, but vanilla no longer calls or reads them.
   ['RISK', 'overrides OnCEUpdate(), which 1.30 never calls (use OnCEIterate(currentTime, elapsedTime))', re('\\boverride\\s+void\\s+OnCEUpdate\\s*\\(')],
@@ -85,7 +85,36 @@ const GENERIC = new Map([
   ['GameSettings', re('(?:\\bnew\\s+GameSettings\\b|\\bGameSettings\\s+\\w+\\s*[;=,)]|\\bGameSettings\\s*\\.)')],
 ]);
 const IDENT = re('\\b[A-Za-z_]\\w*\\b');
+// Only an admin's debug spawn runs these, and the parts go to attachment slots.
+const SKIP_IN_DEBUG_SPAWN = new Set(['CreateInInventory now refuses items that do not fit (no log line)']);
+const DEBUG_SPAWN = re('\\bOnDebugSpawn\\s*\\([^)]*\\)\\s*\\{');
 const SCRIPT_PATH_MSG = 'CfgMods script path with backslashes: 1.30 compiles none of these scripts, silently';
+const OTHER_PATH_MSG = "CfgMods script path with backslashes into another mod's folder: 1.30 skips the entry, so code that " +
+  "needs that mod's scripts (often its #define for optional support) can compile out";
+
+function debugSpans(src) {
+  const spans = [];
+  for (const m of finditer(DEBUG_SPAWN, src)) {
+    let depth = 1;
+    let i = m.index + m[0].length;
+    while (i < src.length && depth) {
+      if (src[i] === '{') depth += 1;
+      else if (src[i] === '}') depth -= 1;
+      i += 1;
+    }
+    spans.push([m.index, i]);
+  }
+  return spans;
+}
+
+function ownsPath(pbos, path) {
+  const norm = (s) => s.replace(/\\/g, '/').replace(/^\/+|\/+$/g, '').toLowerCase();
+  const p = norm(path);
+  return pbos.some((pb) => {
+    const pre = norm(pb.prefix || pb.name.slice(0, -4));
+    return pre && (p === pre || p.startsWith(pre + '/'));
+  });
+}
 
 export const CHECK_COUNTS = { patterns: PATTERNS.length + RAW_PATTERNS.length };
 
@@ -195,7 +224,13 @@ export function makeScanner(vanilla) {
       const [src30, cls] = p.load['130'];
       const [src29, cls29] = p.load['129'];
       for (const [level, msg, rx] of RAW_PATTERNS) for (const m of finditer(rx, p.load.raw)) add(level, msg, rel + ':' + (countChar(p.load.raw, '\n', 0, m.index) + 1));
-      for (const [level, msg, rx] of PATTERNS) for (const m of finditer(rx, src30)) add(level, msg, rel + ':' + (countChar(src30, '\n', 0, m.index) + 1));
+      const spans = debugSpans(src30);
+      for (const [level, msg, rx] of PATTERNS) {
+        for (const m of finditer(rx, src30)) {
+          if (SKIP_IN_DEBUG_SPAWN.has(msg) && spans.some(([a, b]) => a <= m.index && m.index < b)) continue;
+          add(level, msg, rel + ':' + (countChar(src30, '\n', 0, m.index) + 1));
+        }
+      }
 
       // ---- 1.30: what a 1.30 server compiles from this file
       for (const c of cls) {
@@ -346,8 +381,9 @@ export function makeScanner(vanilla) {
       const r = m.files.length ? scanFiles(m.files, G) : Object.fromEntries(LEVELS.map((l) => [l, {}]));
       for (const sp of m.scriptPaths) {
         if (sp.module && sp.module.toLowerCase().endsWith('scriptmodule')) {
-          if (!r.BREAK[SCRIPT_PATH_MSG]) r.BREAK[SCRIPT_PATH_MSG] = [];
-          r.BREAK[SCRIPT_PATH_MSG].push(sp.pbo + ': ' + sp.module + ' = ' + sp.path);
+          const [level, msg] = ownsPath(m.pbos, sp.path) ? ['BREAK', SCRIPT_PATH_MSG] : ['RISK', OTHER_PATH_MSG];
+          if (!r[level][msg]) r[level][msg] = [];
+          r[level][msg].push(sp.pbo + ': ' + sp.module + ' = ' + sp.path);
         }
       }
       r.unscanned_pbos = m.pbos.filter((p) => p.unreadable).map((p) => p.name);

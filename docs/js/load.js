@@ -12,7 +12,7 @@ export async function loadMod(mod, rel = (pbo, name) => pbo + '/' + name) {
       out.pbos.push({ name: p.name, unreadable: 1, compressed: 0, error: String(e && e.message ? e.message : e) });
       continue;
     }
-    out.pbos.push({ name: p.name, unreadable: note.unreadable, compressed: note.compressed });
+    out.pbos.push({ name: p.name, prefix: note.prefix, unreadable: note.unreadable, compressed: note.compressed });
     for (const f of note.files) {
       if (f.name.toLowerCase().endsWith('.c')) out.files.push({ rel: rel(p.name, f.name), text: decodeText(f.bytes) });
     }

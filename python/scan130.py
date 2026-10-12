@@ -109,7 +109,7 @@ PATTERNS = [
     ('BREAK', 'modded class GameConstants (fails to compile on 1.30 Exp, DZEXP-93)', re.compile(r'modded\s+class\s+GameConstants\b')),
     ('RISK', 'FindFile on $profile/$mission/$saves lists the game folder on 1.30 (DZEXP-134)', re.compile(r'FindFile\s*\([^;]*\$(profile|mission|saves)', re.I)),
     ('RISK', 'FindFile used (folder listing broken for prefixed/absolute paths on 1.30)', re.compile(r'\bFindFile\s*\(')),
-    ('RISK', 'ChangeGameFocus (global focus freezes input on 1.30 client)', re.compile(r'\bChangeGameFocus\s*\(')),
+    ('RISK', 'ChangeGameFocus with no device (global focus freezes input on 1.30 client)', re.compile(r'\bChangeGameFocus\s*\(\s*(?:[^,();]|\([^()]*\))*\)')),
     ('RISK', 'GetFluidCapacityScript returns int on 1.30', re.compile(r'\bGetFluidCapacityScript\b')),
     # Silent breakers: compile on 1.30, but vanilla no longer calls or reads them.
     ('RISK', 'overrides OnCEUpdate(), which 1.30 never calls (use OnCEIterate(currentTime, elapsedTime))', re.compile(r'\boverride\s+void\s+OnCEUpdate\s*\(')),
@@ -136,6 +136,35 @@ GENERIC = {
     'GameSettings': r'(?:\bnew\s+GameSettings\b|\bGameSettings\s+\w+\s*[;=,)]|\bGameSettings\s*\.)',
 }
 IDENT = re.compile(r'\b[A-Za-z_]\w*\b')
+# Only an admin's debug spawn runs these, and the parts go to attachment slots.
+SKIP_IN_DEBUG_SPAWN = {'CreateInInventory now refuses items that do not fit (no log line)'}
+DEBUG_SPAWN = re.compile(r'\bOnDebugSpawn\s*\([^)]*\)\s*\{')
+SCRIPT_PATH_MSG = 'CfgMods script path with backslashes: 1.30 compiles none of these scripts, silently'
+OTHER_PATH_MSG = ("CfgMods script path with backslashes into another mod's folder: 1.30 skips the entry, so code that "
+                  "needs that mod's scripts (often its #define for optional support) can compile out")
+
+
+def debug_spans(src):
+    spans = []
+    for m in DEBUG_SPAWN.finditer(src):
+        depth, i = 1, m.end()
+        while i < len(src) and depth:
+            if src[i] == '{':
+                depth += 1
+            elif src[i] == '}':
+                depth -= 1
+            i += 1
+        spans.append((m.start(), i))
+    return spans
+
+
+def owns_path(pbos, path):
+    p = path.replace('\\', '/').strip('/').lower()
+    for pb, note in pbos.items():
+        pre = (note.get('prefix') or pb[:-4]).replace('\\', '/').strip('/').lower()
+        if pre and (p == pre or p.startswith(pre + '/')):
+            return True
+    return False
 
 
 def load(f):
@@ -190,8 +219,11 @@ def scan_files(files):
         for level, msg, rx in RAW_PATTERNS:
             for m in rx.finditer(p['raw']):
                 add(level, msg, rel + ':' + str(p['raw'].count('\n', 0, m.start()) + 1))
+        spans = debug_spans(src30)
         for level, msg, rx in PATTERNS:
             for m in rx.finditer(src30):
+                if msg in SKIP_IN_DEBUG_SPAWN and any(a <= m.start() < b for a, b in spans):
+                    continue
                 add(level, msg, rel + ':' + str(src30.count('\n', 0, m.start()) + 1))
 
         # ---- 1.30: what a 1.30 server compiles from this file
@@ -353,7 +385,10 @@ for n, info in manifest.items():
     r = scan_files(files) if files else {'BREAK': {}, 'RISK': {}, 'INFO': {}, 'BREAK_129': {}, 'RISK_129': {}}
     for pbo, mod_, path in SCRIPT_PATHS.get(n, []):
         if mod_ and mod_.lower().endswith('scriptmodule'):
-            r['BREAK'].setdefault('CfgMods script path with backslashes: 1.30 compiles none of these scripts, silently', []).append(pbo + ': ' + mod_ + ' = ' + path)
+            if owns_path(info['pbos'], path):
+                r['BREAK'].setdefault(SCRIPT_PATH_MSG, []).append(pbo + ': ' + mod_ + ' = ' + path)
+            else:
+                r['RISK'].setdefault(OTHER_PATH_MSG, []).append(pbo + ': ' + mod_ + ' = ' + path)
     r['unscanned_pbos'] = [k for k, p in info['pbos'].items() if p['unreadable']]
     r['packed_pbos'] = [k for k, p in info['pbos'].items() if p['compressed']]
     r['mod'] = info['mod']
