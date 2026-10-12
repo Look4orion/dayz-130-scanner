@@ -219,6 +219,16 @@ export function makeScanner(vanilla) {
     };
     const parsed = files.map((f) => ({ rel: f.rel, load: load(f.text) }));
     const modclasses = ownClasses(parsed);
+    // methods and fields the mod declares in any of its files (overrides excluded)
+    const modOwn = new Set();
+    for (const p of parsed) {
+      for (const tag of ['130', '129']) {
+        for (const c of p.load[tag][1]) {
+          for (const [mn, ovs] of c.methods) if (!anyOverride(ovs)) modOwn.add(mn);
+          for (const f of c.fields) modOwn.add(f);
+        }
+      }
+    }
     for (const p of parsed) {
       const rel = p.rel;
       const [src30, cls] = p.load['130'];
@@ -273,7 +283,7 @@ export function makeScanner(vanilla) {
         }
       }
       const body = strip(src30);
-      const own = new Set(modclasses.keys());
+      const own = new Set([...modclasses.keys(), ...modOwn]);
       for (const c of cls) {
         for (const m of c.methods.keys()) own.add(m);
         for (const f of c.fields) own.add(f);

@@ -212,6 +212,13 @@ def scan_files(files):
 
     parsed = [(f, load(f)) for f in files]
     modclasses = own_classes(parsed)
+    # methods and fields the mod declares in any of its files (overrides excluded)
+    mod_own = set()
+    for _, p in parsed:
+        for tag in ('130', '129'):
+            for c in p[tag][1]:
+                mod_own.update(m for m, o in c['methods'].items() if not any(v['override'] for v in o))
+                mod_own.update(c['fields'])
     for f, p in parsed:
         rel = os.path.relpath(f, SRC).replace('\\', '/')
         src30, cls = p['130']
@@ -272,7 +279,7 @@ def scan_files(files):
                         if any(m.get('obsolete') for m in ms30 if sig(m) == s):
                             add('INFO', 'overrides ' + vc30 + '.' + mn + '(), marked [Obsolete] in 1.30', rel)
         body = strip(src30)
-        own = set(modclasses)
+        own = set(modclasses) | mod_own
         for c in cls:
             own.update(c['methods'])
             own.update(c['fields'])
