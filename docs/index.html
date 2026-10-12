@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: https://rook1969.goatcounter.com; connect-src 'self'; worker-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'">
+<title>DayZ 1.30 Mod Scanner</title>
+<meta name="description" content="Check DayZ mods for known 1.30 breaking changes. Runs in your browser; your files are never uploaded.">
+<link rel="stylesheet" href="style.css">
+<script type="module" src="js/app.js"></script>
+</head>
+<body>
+<main>
+  <header>
+    <h1>DayZ 1.30 Mod Scanner</h1>
+    <p class="lede">Checks a mod's scripts for the known DayZ 1.30 breaking changes, and whether the same build still compiles on 1.29.</p>
+    <p class="private"><strong>Your files never leave your computer.</strong> The scan runs in this browser tab and nothing is uploaded: the page can't send data anywhere except a visit counter (GoatCounter, no cookies), which records only that the page was opened or a scan was run, never anything about your files. Once loaded, the scanner works offline.</p>
+  </header>
+
+  <section id="drop" class="drop" tabindex="0">
+    <p class="drop-main">Drop mod folders or .pbo files here</p>
+    <p class="drop-sub">A mod folder is the one with an <code>Addons</code> folder inside (<code>@MyMod</code>, or a Workshop number folder). You can drop several mods, or a whole folder of mods, at once.</p>
+    <div class="pickers">
+      <label class="button">Choose a folder<input id="pick-folder" type="file" webkitdirectory multiple hidden></label>
+      <label class="button">Choose .pbo files<input id="pick-files" type="file" accept=".pbo" multiple hidden></label>
+    </div>
+  </section>
+
+  <div class="options">
+    <label><input id="hide-info" type="checkbox"> Hide "good to know" notes</label>
+  </div>
+  <p id="status" class="status" role="status"></p>
+  <section id="results"></section>
+
+  <section class="about">
+    <h2>Reading the results</h2>
+    <dl>
+      <dt><span class="pill break">break</span> Breaks on 1.30</dt>
+      <dd>Code 1.30 will not compile or will silently skip: overrides of methods that were removed or changed, name clashes with methods vanilla added, script folders written with backslashes (1.30 loads none of their scripts, with no error), <code>modded class GameConstants</code>, <code>#include "$profile..."</code>.</dd>
+      <dt><span class="pill risk">risk</span> Check by hand</dt>
+      <dd>Uses something 1.30 removed or changed, where the scanner can't tell for sure from the name alone: folder listings with <code>FindFile</code> (they return nothing for <code>$profile:</code> folders on 1.30), menus taking global input focus with <code>ChangeGameFocus</code>, methods 1.30 made protected, version gates like <code>#ifdef DAYZ_1_30</code> that switch off again on 1.31.</dd>
+      <dt><span class="pill info">info</span> Good to know</dt>
+      <dd>Still works, but behaves differently on 1.30: <code>CreateInInventory</code> refusing items that don't fit, obsolete methods, car headlight overrides 1.30 no longer calls.</dd>
+      <dt><span class="pill break">1.29</span> Won't compile on 1.29</dt>
+      <dd>For builds that must still run on 1.29 servers: code that uses classes or methods that only exist from 1.30, outside a <code>#ifndef DAYZ_1_29</code> block.</dd>
+    </dl>
+    <h2>What it can't tell you</h2>
+    <ul>
+      <li>A clean result means no <em>known</em> breaker was found, not that the mod works. It reads code; it doesn't run it.</li>
+      <li>It matches by name. A mod's own field or class that happens to share a name with something vanilla removed shows up as a "check by hand" hit. Read each hit before reporting it to an author.</li>
+      <li>Config is not checked (for example, 1.30 needing a <code>_Ruined</code> class for every car wheel).</li>
+      <li>Code under a mod's own <code>#ifdef</code> is checked both ways, as if the define could be on or off.</li>
+      <li>Mods that reference each other: drop them together, so names one mod defines count as known for the others.</li>
+    </ul>
+    <p class="small">Compares against an index of vanilla class and method names built from the game's own scripts (DayZ 1.29.163709 and 1.30.164014). The same scanner also runs from the command line: <a href="https://github.com/Look4orion/dayz-130-scanner">source and instructions</a>.</p>
+  </section>
+</main>
+</body>
+</html>
