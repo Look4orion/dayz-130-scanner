@@ -106,7 +106,7 @@ OBSOLETE = set(V['obsolete130'])
 
 # Matched against the code a 1.30 server compiles (inactive #ifdef branches and comments removed).
 PATTERNS = [
-    ('BREAK', 'modded class GameConstants (fails to compile on 1.30 Exp, DZEXP-93)', re.compile(r'modded\s+class\s+GameConstants\b')),
+    ('RISK', 'modded class GameConstants: fails to compile on 1.30 Experimental 164014; reported fixed on the playtest build and Bohemia says resolved for 1.30 stable (DZEXP-93). Check it compiles once stable ships',re.compile(r'modded\s+class\s+GameConstants\b')),
     ('RISK', 'FindFile on $profile/$mission/$saves lists the game folder on 1.30 (DZEXP-134)', re.compile(r'FindFile\s*\([^;]*\$(profile|mission|saves)', re.I)),
     ('RISK', 'FindFile used (folder listing broken for prefixed/absolute paths on 1.30)', re.compile(r'\bFindFile\s*\(')),
     ('RISK', 'ChangeGameFocus with no device (global focus freezes input on 1.30 client)', re.compile(r'\bChangeGameFocus\s*\(\s*(?:[^,();]|\([^()]*\))*\)')),
