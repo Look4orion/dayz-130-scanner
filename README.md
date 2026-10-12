@@ -4,9 +4,10 @@ Checks DayZ mods for the known 1.30 breaking changes, and whether the same build
 on 1.29. It reads the mod's scripts and compares them with an index of the vanilla 1.29 and 1.30
 scripts; it does not run anything.
 
-**Web version:** drop a mod folder or its `.pbo` files on the page and get a report. The scan runs
-in your browser and your files are never uploaded (the page's Content-Security-Policy only lets it
-load its own files).
+**Web version:** https://look4orion.github.io/dayz-130-scanner/. Drop a mod folder or its `.pbo`
+files on the page and get a report. The scan runs in your browser and your files are never uploaded:
+the page's Content-Security-Policy only lets it load its own files, plus a GoatCounter visit counter
+(no cookies) that records that the page was opened or a scan was run, never anything about your files.
 
 **Command line:** the same checks in Python 3, standard library only (see below).
 
@@ -28,9 +29,13 @@ Each script file is read twice, as a 1.29 server and as a 1.30 server compile it
   This is what breaks Code Lock's `ItemBase.GetCodeLock()` against 1.30's `Fence.GetCodeLock()`.
 - **Uses** of removed methods, fields and classes. These are `RISK` only: the same name can belong to
   another mod's class, so check the receiver's type by hand.
-- **Known patterns:** `modded class GameConstants`, `#include "$profile..."`, `FindFile` (folder
-  listings of `$profile:`/`$mission:` return nothing on 1.30), `ChangeGameFocus` (global input focus
-  freezes menu input on 1.30), `GetFluidCapacityScript`, `CreateInInventory`, `Fill`.
+- **Known patterns:** `#include "$profile..."`, `FindFile` (folder listings of `$profile:`/`$mission:`
+  return nothing on 1.30), `ChangeGameFocus` with no device argument (global input focus freezes
+  menu input on 1.30; the per-device form vanilla uses is fine), `GetFluidCapacityScript`,
+  `CreateInInventory` (not inside `OnDebugSpawn`, which only an admin's debug spawn runs), `Fill`.
+- **`modded class GameConstants`** (`RISK`): fails to compile on 1.30 Experimental 164014, even with
+  an empty body. Bohemia says it is resolved for 1.30 stable (DZEXP-93) and it is reported fixed on
+  the playtest build; check it compiles once stable ships.
 - **Silent breakers** (compile, but 1.30 vanilla never calls them): overrides of `OnCEUpdate`
   (1.30 calls `OnCEIterate`), the old `GetNoiseReduction`/`GetNoiseReductionByWeather`, and
   `AddExplosionEffectForSurface` registrations.
@@ -39,8 +44,11 @@ Each script file is read twice, as a 1.29 server and as a 1.30 server compile it
 - **Wrong version gates** (`RISK`): `#ifdef DAYZ_1_30` (off again on 1.31; use `#ifndef DAYZ_1_29`)
   and `BUILD_EXPERIMENTAL` (gone on 1.30 stable).
 - **Methods 1.30 made protected** (`RISK`), called from outside the class.
-- **CfgMods script paths with backslashes** (`BREAK`): 1.30 compiles none of that module's scripts
+- **CfgMods script paths with backslashes** (`BREAK`): 1.30 compiles none of that folder's scripts
   and logs nothing. Only `*ScriptModule` entries count; image sets with backslashes still load.
+  A backslash path into *another* mod's folder (one not under any of this mod's PBO prefixes) is
+  `RISK` instead: mods list another mod's folder to pick up its `#define` for optional support, so
+  on 1.30 that support can compile out.
 - `INFO`: calls and overrides of methods 1.30 marks `[Obsolete]` (they still compile).
 
 **1.29** (`BREAK_129`, `RISK_129`), for builds that must still run on a 1.29 server:
@@ -48,7 +56,10 @@ Each script file is read twice, as a 1.29 server and as a 1.30 server compile it
 - Overrides of a method that only exists from 1.30, or written with its 1.30 signature.
 - `RISK_129`: calls of methods and uses of classes that only exist from 1.30.
 
-Names that any scanned mod declares count as known, so scan mods that depend on each other together.
+A method or field a mod declares in any of its own files counts as the mod's own, so calling it is
+never mistaken for the vanilla name (overrides don't count: a call may still reach vanilla's).
+Names that any scanned mod declares count as known for the 1.29 checks, so scan mods that depend
+on each other together.
 
 ## Known limits
 
