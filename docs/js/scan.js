@@ -297,6 +297,12 @@ export function makeScanner(vanilla) {
     return out;
   };
   const addedIn130 = (cn, m) => B.has(cn) && B.get(cn).methods.has(m) && !(A.has(cn) && A.get(cn).methods.has(m));
+  const LOWER130 = new Map([...B.keys()].map((cn) => [cn.toLowerCase(), cn]));
+  const isSubtype = (sub, sup) => sub === sup || (LOWER130.has(sub) && chain(B, LOWER130.get(sub)).some((x) => x.toLowerCase() === sup));
+  // Vanilla's new cn.m() is a valid override of the mod's m(): same parameters, and its return
+  // type is the mod's or a subclass of it (Code Lock's ItemBase GetCodeLock() vs 1.30's
+  // DigitalCodeLock Fence.GetCodeLock() compiles, measured 2026-10-08).
+  const overridesCleanly = (cn, m, ovs) => B.get(cn).methods.get(m).every((v) => ovs.some((o) => sig(o) === sig(v) && isSubtype(v.ret, o.ret)));
 
   const REMOVED_MEMBERS = new Map();
   for (const [cn, c] of A) {
@@ -420,7 +426,7 @@ export function makeScanner(vanilla) {
           for (const [mn, ovs] of c.methods) {
             if (anyOverride(ovs) || mn === name || mn === vbase || mn.startsWith('~')) continue;
             const anc = chain(B, vbase).filter((x) => addedIn130(x, mn));
-            const desc = c.modded ? descendants(vbase).filter((x) => addedIn130(x, mn)) : [];
+            const desc = c.modded ? descendants(vbase).filter((x) => addedIn130(x, mn) && !overridesCleanly(x, mn, ovs)) : [];
             if (anc.length) add('BREAK', `adds ${name}.${mn}(), but 1.30 vanilla now defines ${mn}() in ${anc[0]} (name clash)`, rel);
             else if (desc.length) add('BREAK', `adds ${mn}() to every ${name}, but 1.30 vanilla now defines ${mn}() in subclass ${desc.slice(0, 3).join(', ')} (name clash)`, rel);
           }

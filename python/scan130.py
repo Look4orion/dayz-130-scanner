@@ -81,6 +81,20 @@ def descendants(cn):
 
 def added_in_130(cn, m):
     return m in B.get(cn, {}).get('methods', {}) and m not in A.get(cn, {}).get('methods', {})
+
+
+LOWER130 = {cn.lower(): cn for cn in B}
+
+
+def is_subtype(sub, sup):
+    return sub == sup or (sub in LOWER130 and any(x.lower() == sup for x in chain(B, LOWER130[sub])))
+
+
+def overrides_cleanly(cn, m, ovs):
+    """Vanilla's new cn.m() is a valid override of the mod's m(): same parameters, and its return
+    type is the mod's or a subclass of it (Code Lock's ItemBase GetCodeLock() vs 1.30's
+    DigitalCodeLock Fence.GetCodeLock() compiles, measured 2026-10-08)."""
+    return all(any(sig(o) == sig(v) and is_subtype(v['ret'], o['ret']) for o in ovs) for v in B[cn]['methods'][m])
 REMOVED_MEMBERS = {}  # name -> "Class.member"
 for cn, c in A.items():
     if cn not in B:
@@ -407,7 +421,7 @@ def scan_files(files):
                     if any(ov['override'] for ov in ovs) or mn in (name, vbase) or mn.startswith('~'):
                         continue  # overrides, constructors and destructors
                     anc = [x for x in chain(B, vbase) if added_in_130(x, mn)]
-                    desc = [x for x in descendants(vbase) if added_in_130(x, mn)] if c['modded'] else []
+                    desc = [x for x in descendants(vbase) if added_in_130(x, mn) and not overrides_cleanly(x, mn, ovs)] if c['modded'] else []
                     if anc:
                         add('BREAK', 'adds %s.%s(), but 1.30 vanilla now defines %s() in %s (name clash)' % (name, mn, mn, anc[0]), rel)
                     elif desc:

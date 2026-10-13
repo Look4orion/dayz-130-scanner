@@ -27,6 +27,9 @@ Each script file is read twice, as a 1.29 server and as a 1.30 server compile it
 - **Name clashes with methods vanilla added in 1.30.** A mod method (not `override`) with the same
   name as a new vanilla method in an ancestor class, or (for `modded class X`) in any subclass of X.
   This is what breaks Code Lock's `ItemBase.GetCodeLock()` against 1.30's `Fence.GetCodeLock()`.
+  A subclass method isn't a clash when it has the same parameters and returns the mod's return type
+  or a subclass of it: vanilla's method then overrides the mod's. Returning `ItemBase` instead of
+  `CodeLock` is how a fix makes `DigitalCodeLock Fence.GetCodeLock()` compile.
 - **Uses** of removed methods, fields and classes. These are `RISK` only: the same name can belong to
   another mod's class, so check the receiver's type by hand.
 - **`FindFile`:** folder listings of `$profile:`/`$mission:` return nothing on 1.30 (DZEXP-134). A
