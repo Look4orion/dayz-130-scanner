@@ -107,8 +107,6 @@ OBSOLETE = set(V['obsolete130'])
 # Matched against the code a 1.30 server compiles (inactive #ifdef branches and comments removed).
 PATTERNS = [
     ('RISK', 'modded class GameConstants: fails to compile on 1.30 Experimental 164014; reported fixed on the playtest build and Bohemia says resolved for 1.30 stable (DZEXP-93). Check it compiles once stable ships',re.compile(r'modded\s+class\s+GameConstants\b')),
-    ('RISK', 'FindFile on $profile/$mission/$saves lists the game folder on 1.30 (DZEXP-134)', re.compile(r'FindFile\s*\([^;]*\$(profile|mission|saves)', re.I)),
-    ('RISK', 'FindFile used (folder listing broken for prefixed/absolute paths on 1.30)', re.compile(r'\bFindFile\s*\(')),
     ('RISK', 'ChangeGameFocus with no device (global focus freezes input on 1.30 client)', re.compile(r'\bChangeGameFocus\s*\(\s*(?:[^,();]|\([^()]*\))*\)')),
     ('RISK', 'GetFluidCapacityScript returns int on 1.30', re.compile(r'\bGetFluidCapacityScript\b')),
     # Silent breakers: compile on 1.30, but vanilla no longer calls or reads them.
@@ -139,6 +137,18 @@ IDENT = re.compile(r'\b[A-Za-z_]\w*\b')
 # Only an admin's debug spawn runs these, and the parts go to attachment slots.
 SKIP_IN_DEBUG_SPAWN = {'CreateInInventory now refuses items that do not fit (no log line)'}
 DEBUG_SPAWN = re.compile(r'\bOnDebugSpawn\s*\([^)]*\)\s*\{')
+# FindFile calls are checked one at a time: flags -1 is the DZEXP-134 workaround.
+FF_PROFILE_MSG = 'FindFile on $profile/$mission/$saves lists the game folder on 1.30 (DZEXP-134)'
+FF_MSG = 'FindFile used (folder listing broken for prefixed/absolute paths on 1.30)'
+FF_FIXED_MSG = 'FindFile passes flags -1, the DZEXP-134 workaround: lists $profile:/$mission: on 1.30'
+FF_129_MSG = ('FindFile with flags -1 lists nothing on 1.29, and the call has no retry '
+              '(retry with FindFileFlags.ALL when -1 finds nothing, or gate with #ifdef DAYZ_1_29)')
+FF_CALL = re.compile(r'\bFindFile\s*\(')
+FF_PREFIXED = re.compile(r'\$(profile|mission|saves)', re.I)
+MINUS_ONE = re.compile(r'-\s*1')
+FLAG_ARG = re.compile(r'(?:\w+\s*\.\s*)*(\w+)\s*(\(.*\))?', re.S)
+FUNC_HEAD = re.compile(r'\b(\w+)\s*\(([^;{}()]*)\)\s*\{')
+BLOCK_WORDS = {'if', 'while', 'for', 'foreach', 'switch', 'catch', 'return'}
 SCRIPT_PATH_MSG = 'CfgMods script path with backslashes: 1.30 compiles none of these scripts, silently'
 OTHER_PATH_MSG = ("CfgMods script path with backslashes into another mod's folder: 1.30 skips the entry, so code that "
                   "needs that mod's scripts (often its #define for optional support) can compile out")
@@ -156,6 +166,135 @@ def debug_spans(src):
             i += 1
         spans.append((m.start(), i))
     return spans
+
+
+def call_args(src, i):
+    """Top-level arguments of the call whose '(' is at src[i], or None if it never closes."""
+    args, depth, start, j = [], 0, i + 1, i
+    while j < len(src):
+        c = src[j]
+        if c == '"':
+            j += 1
+            while j < len(src) and src[j] != '"':
+                j += 2 if src[j] == '\\' else 1
+        elif c in '([{':
+            depth += 1
+        elif c in ')]}':
+            depth -= 1
+            if depth == 0:
+                args.append(src[start:j])
+                return args
+        elif c == ',' and depth == 1:
+            args.append(src[start:j])
+            start = j + 1
+        j += 1
+    return None
+
+
+def method_bodies(src, name):
+    out = []
+    for m in re.finditer(r'\b' + name + r'\s*\([^;{}]*\)\s*\{', src):
+        depth, i = 1, m.end()
+        while i < len(src) and depth:
+            if src[i] == '{':
+                depth += 1
+            elif src[i] == '}':
+                depth -= 1
+            i += 1
+        out.append(src[m.end():i])
+    return out
+
+
+def enclosing_function(src, heads, pos):
+    """(name, parameters, body start) of the function whose body holds src[pos], or None."""
+    for h in reversed(heads):
+        if h.end() > pos:
+            continue
+        if h.group(1) not in BLOCK_WORDS and same_block(src, h.end(), pos):
+            return h.group(1), [x.strip() for x in h.group(2).split(',')], h.end()
+    return None
+
+
+def flags_minus_one(a, modsrc, src, heads, pos, memo):
+    """A FindFile flags argument that is -1: the literal, a const or static the mod sets to -1, a
+    method of the mod that returns -1, or a variable or parameter of the calling function that the
+    function sets to -1 or that its callers pass -1 into."""
+    if a.startswith('FindFileFlags'):
+        return False
+    if MINUS_ONE.fullmatch(a):
+        return True
+    m = FLAG_ARG.fullmatch(a)
+    if not m:
+        return False
+    name = m.group(1)
+    if m.group(2) is not None:
+        if ('ret', name) not in memo:
+            memo[('ret', name)] = any(re.search(r'\breturn\s*-\s*1\s*;', b) for b in method_bodies(modsrc, name))
+        return memo[('ret', name)]
+    if ('decl', name) not in memo:
+        memo[('decl', name)] = bool(re.search(r'\b(?:const|static)\b[^;{}=()]*\b' + name + r'\s*=\s*-\s*1\s*;', modsrc))
+    if memo[('decl', name)]:
+        return True
+    if '.' in a:
+        return False
+    fn = enclosing_function(src, heads, pos)
+    if not fn:
+        return False
+    fname, params, start = fn
+    if re.search(r'\b' + name + r'\s*=\s*-\s*1\b', src[start:pos]):
+        return True
+    idx = [k for k, x in enumerate(params) if re.search(r'\b' + name + r'\s*(?:=.*)?$', x)]
+    if not idx:
+        return False
+    key = ('pass', fname, idx[0])
+    if key not in memo:
+        memo[key] = False
+        for c in re.finditer(r'\b' + fname + r'\s*\(', modsrc):
+            got = call_args(modsrc, c.end() - 1)
+            if got and len(got) > idx[0] and MINUS_ONE.fullmatch(got[idx[0]].strip()):
+                memo[key] = True
+                break
+    return memo[key]
+
+
+def findfile_hits(src, modsrc, memo):
+    """(offset, prefixed path, flags -1) for each FindFile call in src."""
+    out = []
+    heads = None
+    for m in FF_CALL.finditer(src):
+        args = call_args(src, m.end() - 1)
+        end = src.find(';', m.end())
+        prefixed = bool(FF_PREFIXED.search(src[m.end():end if end >= 0 else len(src)]))
+        fixed = False
+        if args and len(args) >= 4:
+            if heads is None:
+                heads = list(FUNC_HEAD.finditer(src))
+            fixed = flags_minus_one(args[3].strip(), modsrc, src, heads, m.start(), memo)
+        out.append((m.start(), prefixed, fixed))
+    return out
+
+
+def same_block(src, a, b):
+    """src[b] is in the block that holds src[a] (or deeper): the braces between never close it."""
+    depth = 0
+    for c in src[a:b]:
+        if c == '{':
+            depth += 1
+        elif c == '}':
+            depth -= 1
+            if depth < 0:
+                return False
+    return True
+
+
+def is_fallback(src, hits, k):
+    """An unfixed call after a -1 call in the same function: the retry of the version-proof fix."""
+    return any(fixed and at < hits[k][0] and same_block(src, at, hits[k][0]) for at, _, fixed in hits[:k])
+
+
+def has_retry(src, hits, k):
+    """A -1 call followed by another call in the same function (1.29 gets its answer there)."""
+    return any(not fixed and same_block(src, hits[k][0], at) for at, _, fixed in hits[k + 1:])
 
 
 def owns_path(pbos, path):
@@ -219,6 +358,10 @@ def scan_files(files):
             for c in p[tag][1]:
                 mod_own.update(m for m, o in c['methods'].items() if not any(v['override'] for v in o))
                 mod_own.update(c['fields'])
+    mod30 = '\n'.join(p['130'][0] for _, p in parsed)
+    mod29 = '\n'.join(p['129'][0] for _, p in parsed)
+    all29 = 'FindFileFlags.ALL' in mod29
+    memo30, memo29 = {}, {}
     for f, p in parsed:
         rel = os.path.relpath(f, SRC).replace('\\', '/')
         src30, cls = p['130']
@@ -232,6 +375,22 @@ def scan_files(files):
                 if msg in SKIP_IN_DEBUG_SPAWN and any(a <= m.start() < b for a, b in spans):
                     continue
                 add(level, msg, rel + ':' + str(src30.count('\n', 0, m.start()) + 1))
+        hits = findfile_hits(src30, mod30, memo30)
+        for k, (at, prefixed, fixed) in enumerate(hits):
+            where = rel + ':' + str(src30.count('\n', 0, at) + 1)
+            if fixed:
+                add('INFO', FF_FIXED_MSG, where)
+                continue
+            if is_fallback(src30, hits, k):
+                continue
+            if prefixed:
+                add('RISK', FF_PROFILE_MSG, where)
+            add('RISK', FF_MSG, where)
+        if not all29:
+            hits29 = findfile_hits(src29, mod29, memo29)
+            for k, (at, _, fixed) in enumerate(hits29):
+                if fixed and not has_retry(src29, hits29, k):
+                    add('RISK_129', FF_129_MSG, rel + ':' + str(src29.count('\n', 0, at) + 1))
 
         # ---- 1.30: what a 1.30 server compiles from this file
         for c in cls:

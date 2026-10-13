@@ -29,8 +29,14 @@ Each script file is read twice, as a 1.29 server and as a 1.30 server compile it
   This is what breaks Code Lock's `ItemBase.GetCodeLock()` against 1.30's `Fence.GetCodeLock()`.
 - **Uses** of removed methods, fields and classes. These are `RISK` only: the same name can belong to
   another mod's class, so check the receiver's type by hand.
-- **Known patterns:** `#include "$profile..."`, `FindFile` (folder listings of `$profile:`/`$mission:`
-  return nothing on 1.30), `ChangeGameFocus` with no device argument (global input focus freezes
+- **`FindFile`:** folder listings of `$profile:`/`$mission:` return nothing on 1.30 (DZEXP-134). A
+  call whose flags are `-1` is the known workaround and is only noted (`INFO`): the literal, a
+  `const`/`static` the mod sets to `-1`, a method of the mod that returns `-1`, or a variable or
+  parameter of the calling function that it sets to `-1` or that its callers pass `-1` into. A retry
+  after a `-1` call in the same function is part of the workaround and isn't reported. `-1` lists
+  nothing on 1.29, so a `-1` call with no retry, in a mod that never uses `FindFileFlags.ALL`, is a
+  1.29 `RISK`.
+- **Known patterns:** `#include "$profile..."`, `ChangeGameFocus` with no device argument (global input focus freezes
   menu input on 1.30; the per-device form vanilla uses is fine), `GetFluidCapacityScript`,
   `CreateInInventory` (not inside `OnDebugSpawn`, which only an admin's debug spawn runs), `Fill`.
 - **`modded class GameConstants`** (`RISK`): fails to compile on 1.30 Experimental 164014, even with
