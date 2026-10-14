@@ -82,29 +82,31 @@ on each other together.
 
 - The parser is regex and brace based. Defines other than `DAYZ_1_29`/`DAYZ_1_30` are not
   evaluated, so code under `#ifdef SERVER` or a mod's own define counts for both branches.
-- Scrambled (obfuscated) PBOs parse, but hits there need a closer look. The command-line
-  extractor writes each script to disk, and in heavily scrambled PBOs Windows refuses a few of
-  the decoy files' paths (about 1-2% in the worst mods tested); the web version reads every file
-  in memory and has no such gap.
+- Scrambled (obfuscated) PBOs parse, but hits there need a closer look. Both scanners read the
+  PBOs in memory. `extract.py`, which writes the scripts to disk for reading, can't write a few of
+  the decoy files in heavily scrambled PBOs (Windows refuses their paths), so a scan of its output
+  can miss those.
 - Config is not checked (for example, 1.30 needing a `<wheel>_Ruined` class for every wheel).
 
 ## Command line
 
-Python 3, no packages to install. Run each script with `python -I`, and keep extracted mod sources
-in their own folder: they are third-party code.
+Python 3, no packages to install. Run each script with `python -I`.
 
 1. **Mod list**, `mods.tsv`: one line per mod, tab separated: `<number>\t<mod|serverMod>\t<@Folder>`.
    You can take it from a server's command line (`-mod=...;...`, split on `;`).
-2. **Extract the scripts** from the mods (a folder holding the `@Folder`s) into `modsrc`:
+2. **Scan** the mods in a folder holding the `@Folder`s. The PBOs are read in memory:
    ```
-   python -I python/extract.py mods.tsv <mods folder> modsrc
+   python -I python/scan130.py docs/vanilla.json --pbo mods.tsv <mods folder> scan.json
    ```
-3. **Scan**:
-   ```
-   python -I python/scan130.py docs/vanilla.json modsrc scan.json mods.tsv <mods folder>
-   ```
-   `scan.json` lists, per mod, the hits by level with file and line. The last two arguments add the
-   CfgMods script path check.
+   `scan.json` lists, per mod, the hits by level with file and line, including the CfgMods script
+   path check.
+
+To read the code behind a hit, `extract.py` writes the scripts to a folder (keep it separate: they are
+third-party code). `scan130.py` can also scan that folder, as it did before `--pbo`:
+```
+python -I python/extract.py mods.tsv <mods folder> modsrc
+python -I python/scan130.py docs/vanilla.json modsrc scan.json mods.tsv <mods folder>
+```
 
 Also included: `python/deps.py` (mod-to-mod dependencies from `requiredAddons`), `python/modpaths.py`
 (every backslash script path), and `python/hiddendeps.py` (dependencies a mod uses but doesn't
@@ -124,7 +126,7 @@ python -I python/vanilla.py <1.29 dta/scripts.pbo> <1.30 dta/scripts.pbo> docs/v
 The web scanner in `docs/js` is a port of the Python scanner; the two must agree. `tools/parity.mjs`
 runs the web code in Node over a mod list, and `tools/compare.py` checks the two reports hit for hit:
 ```
-python -I python/scan130.py docs/vanilla.json modsrc py.json mods.tsv <mods folder>
+python -I python/scan130.py docs/vanilla.json --pbo mods.tsv <mods folder> py.json
 node tools/parity.mjs docs/vanilla.json mods.tsv <mods folder> js.json
 python -I tools/compare.py py.json js.json
 ```

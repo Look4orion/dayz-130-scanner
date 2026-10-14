@@ -1,14 +1,19 @@
-"""Static 1.30 compatibility scan of extracted mod scripts against the vanilla 1.29 -> 1.30 diff.
-Usage: scan130.py vanilla.json <modsrc dir> <out.json> [mods.tsv <mods root>]
-With mods.tsv and the mods root (as for extract.py), CfgMods script paths are checked too."""
+"""Static 1.30 compatibility scan of mod scripts against the vanilla 1.29 -> 1.30 diff.
+Usage: scan130.py vanilla.json --pbo mods.tsv <mods root> <out.json>   (reads the PBOs directly)
+   or: scan130.py vanilla.json <modsrc dir> <out.json> [mods.tsv <mods root>]   (extract.py output)
+With mods.tsv and the mods root, CfgMods script paths are checked too."""
 import sys, os, json, re, glob
 sys.path.insert(0, os.path.dirname(__file__))
 from enfparse import parse, strip, preprocess, nocomment, call_args, call_arities, V129, V130
 
 V = json.load(open(sys.argv[1]))
 A, B = V['129'], V['130']
-SRC, OUT = sys.argv[2], sys.argv[3]
-PATHS = sys.argv[4:6] if len(sys.argv) >= 6 else None
+if sys.argv[2] == '--pbo':
+    SRC, OUT = None, sys.argv[5]
+    PATHS = sys.argv[3:5]
+else:
+    SRC, OUT = sys.argv[2], sys.argv[3]
+    PATHS = sys.argv[4:6] if len(sys.argv) >= 6 else None
 
 
 def chain(ix, name, seen=None):
@@ -321,8 +326,7 @@ def owns_path(pbos, path):
     return False
 
 
-def load(f):
-    raw = open(f, encoding='utf-8', errors='replace').read()
+def load(raw):
     out = {'raw': raw}
     for tag, defs in (('130', V130), ('129', V129)):
         src = preprocess(nocomment(raw), defs)
@@ -364,7 +368,7 @@ def scan_files(files):
         if len(res[level][msg]) < 100000:
             res[level][msg].append(where)
 
-    parsed = [(f, load(f)) for f in files]
+    parsed = [(rel, load(src)) for rel, src in files]
     modclasses = own_classes(parsed)
     # methods and fields the mod declares in any of its files (overrides excluded)
     mod_own = set()
@@ -379,8 +383,7 @@ def scan_files(files):
     mod29 = '\n'.join(p['129'][0] for _, p in parsed)
     all29 = 'FindFileFlags.ALL' in mod29
     memo30, memo29 = {}, {}
-    for f, p in parsed:
-        rel = os.path.relpath(f, SRC).replace('\\', '/')
+    for rel, p in parsed:
         src30, cls = p['130']
         src29, cls29 = p['129']
         for level, msg, rx in RAW_PATTERNS:
@@ -547,16 +550,33 @@ def scan_files(files):
     return res
 
 
-manifest = json.load(open(os.path.join(SRC, 'manifest.json')))
-FILES = {n: [f for f in glob.glob(os.path.join(SRC, n, '**', '*.c'), recursive=True) if os.path.isfile(f)] for n in manifest}
+def text(data):
+    return data.decode('utf-8', 'replace').replace('\r\n', '\n').replace('\r', '\n')
+
+
+# FILES: n -> [(path as in the report, script text)]
+if SRC is None:
+    from extract import read_mods
+    manifest, _raw = read_mods(PATHS[0], PATHS[1])
+    FILES = {n: [(p, text(d)) for p, d, is_c in fs if is_c] for n, fs in _raw.items()}
+    del _raw
+else:
+    manifest = json.load(open(os.path.join(SRC, 'manifest.json')))
+    FILES = {}
+    for n in manifest:
+        FILES[n] = []
+        for f in glob.glob(os.path.join(SRC, n, '**', '*.c'), recursive=True):
+            if os.path.isfile(f):
+                with open(f, 'rb') as fh:
+                    FILES[n].append((os.path.relpath(f, SRC).replace('\\', '/'), text(fh.read())))
 
 # Names any scanned mod declares: another mod may mod or call them, so they don't count as "new in 1.30".
 GLOBAL_CLASSES, GLOBAL_METHODS, GLOBAL_NAMES = set(), set(), set()
 MODDED_ADDS = {}  # vanilla class -> methods some mod adds to it with "modded class" (not override)
 for fs in FILES.values():
-    for f in fs:
+    for _, src in fs:
         try:
-            cls = parse(open(f, encoding='utf-8', errors='replace').read())
+            cls = parse(src)
         except Exception:
             continue
         for c in cls:

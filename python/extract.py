@@ -72,13 +72,16 @@ def lzss(data, outlen):
     return bytes(out)
 
 
-def main():
-    mods = [l.rstrip('\n').split('\t') for l in open(sys.argv[1], encoding='utf-8') if l.strip()]
-    root, outdir = sys.argv[2], sys.argv[3]
-    manifest = {}
+def read_mods(tsv, root):
+    """Every .c and config.cpp of the mods in mods.tsv, in memory.
+    Returns the manifest and {n: [(path, bytes, is_script)]}, path being <n>/<pbo>/<cleaned entry path>
+    and is_script whether the entry's own name ends in .c (cleaning can strip that)."""
+    mods = [l.rstrip('\n').split('\t') for l in open(tsv, encoding='utf-8') if l.strip()]
+    manifest, files = {}, {}
     used = set()
     for n, kind, m in ((a.strip(), b.strip(), c.strip()) for a, b, c in mods):
         info = manifest.setdefault(n, {'mod': m, 'kind': kind, 'pbos': {}})
+        out = files.setdefault(n, [])
         for p in sorted(glob.glob(os.path.join(root, m, '[Aa]ddons', '*.pbo'))):
             pb = os.path.basename(p)
             props, ents = pbo_entries(p)
@@ -114,18 +117,31 @@ def main():
                         key = '/'.join([n, pb] + parts).lower()
                         k += 1
                     used.add(key)
-                    dst = os.path.join(outdir, n, pb, *parts)
-                    try:
-                        os.makedirs(os.path.dirname(dst), exist_ok=True)
-                        with open(dst, 'wb') as o:
-                            o.write(data)
-                    except OSError:
-                        note['unreadable'] += 1
-                        continue
+                    out.append(('/'.join([n, pb] + parts), data, low.endswith('.c')))
                     if low.endswith('.c'):
                         note['c_files'] += 1
             info['pbos'][pb] = note
+    return manifest, files
+
+
+def main():
+    manifest, files = read_mods(sys.argv[1], sys.argv[2])
+    outdir = sys.argv[3]
+    for n, fs in files.items():
+        for path, data, is_c in fs:
+            pb = path.split('/')[1]
+            note = manifest[n]['pbos'][pb]
+            dst = os.path.join(outdir, *path.split('/'))
+            try:
+                os.makedirs(os.path.dirname(dst), exist_ok=True)
+                with open(dst, 'wb') as o:
+                    o.write(data)
+            except OSError:
+                note['unreadable'] += 1
+                if is_c:
+                    note['c_files'] -= 1
     json.dump(manifest, open(os.path.join(outdir, 'manifest.json'), 'w'), indent=1)
 
 
-main()
+if __name__ == '__main__':
+    main()
