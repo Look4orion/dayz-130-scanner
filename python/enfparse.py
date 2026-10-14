@@ -263,10 +263,38 @@ CALL_KW = {'return', 'new', 'else', 'case', 'delete'}
 WORD = set('abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_')
 
 
-def call_arities(src, name, skip_super=False):
-    """Argument counts of the calls to name() in stripped src. A type word before the name makes it a definition."""
+PRIM = {'int', 'float', 'bool', 'string', 'vector'}
+NOT_TYPE = CALL_KW | {'out', 'inout', 'ref', 'const', 'notnull', 'autoptr', 'owned', 'static', 'auto',
+                      'private', 'protected', 'override', 'proto', 'native', 'typename'}
+
+
+def arg_type(src, pos, a):
+    """Type of a call argument when it is obvious: a literal, or a variable declared earlier in src. '' if not."""
+    a = a.strip()
+    if a == '""':
+        return 'string'
+    if re.fullmatch(r'-?[0-9]+', a):
+        return 'int'
+    if re.fullmatch(r'-?(?:[0-9]+\.[0-9]*|\.[0-9]+)f?', a):
+        return 'float'
+    if a in ('true', 'false'):
+        return 'bool'
+    if re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*', a):
+        last = ''
+        for m in re.finditer(r'\b([A-Za-z_][A-Za-z0-9_]*)\s+' + a + r'\s*[;=,)]', src[:pos]):
+            if m.group(1) not in NOT_TYPE:
+                last = m.group(1).lower()
+        return last
+    return ''
+
+
+def call_types(src, name, skip_super=False, skip=()):
+    """Argument types (see arg_type) of the calls to name() in stripped src, as tuples.
+    A type word before the name makes it a definition. Calls inside a (start, end) span in skip don't count."""
     out = set()
     for m in re.finditer(r'\b' + name + r'\s*\(', src):
+        if any(a <= m.start() < b for a, b in skip):
+            continue
         k = m.start() - 1
         while k >= 0 and src[k] in ' \t\n':
             k -= 1
@@ -280,5 +308,17 @@ def call_arities(src, name, skip_super=False):
             continue
         a = call_args(src, m.end() - 1)
         if a is not None:
-            out.add(0 if len(a) == 1 and not a[0].strip() else len(a))
+            out.add(() if len(a) == 1 and not a[0].strip() else tuple(arg_type(src, m.start(), x) for x in a))
     return out
+
+
+def type_fits(t, p):
+    """Whether an argument of type t (or unknown, '') can go into a parameter of normalised type p."""
+    p = p.split(' ')[-1] if p else p
+    if not t or not p or t == p or (t == 'int' and p == 'float'):
+        return True
+    return t not in PRIM and p not in PRIM  # two classes: inheritance isn't checked
+
+
+def sig_fits(types, params, req):
+    return req <= len(types) <= len(params) and all(type_fits(t, p) for t, p in zip(types, params))

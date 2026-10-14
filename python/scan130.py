@@ -4,7 +4,7 @@ Usage: scan130.py vanilla.json --pbo mods.tsv <mods root> <out.json>   (reads th
 With mods.tsv and the mods root, CfgMods script paths are checked too."""
 import sys, os, json, re, glob
 sys.path.insert(0, os.path.dirname(__file__))
-from enfparse import parse, strip, preprocess, nocomment, call_args, call_arities, V129, V130
+from enfparse import parse, strip, preprocess, nocomment, call_args, call_types, sig_fits, V129, V130
 
 V = json.load(open(sys.argv[1]))
 A, B = V['129'], V['130']
@@ -122,30 +122,32 @@ for cn, c in A.items():
 
 # [Obsolete] methods in 1.30 (vanilla.py collects them)
 OBSOLETE = set(V['obsolete130'])
-OBS_DEFS = V.get('obsoleteDefs130', {})  # "Class.method" -> [{n, req, stub}]
-OBS_CALLS = {n: set(a) for n, a in V.get('obsoleteCalls130', {}).items()}  # argument counts vanilla calls them with
-# Parameter counts of current (not obsolete) methods sharing an obsolete name: a call with that count may be one of them.
-LIVE_ARITY = {}
+OBS_DEFS = V.get('obsoleteDefs130', {})  # "Class.method" -> [{n, req, stub, params}]
+# Argument types vanilla still calls each obsolete name with ('' = unknown), calls that fit a current overload left out.
+OBS_CALLS = {n: [tuple(c) for c in a] for n, a in V.get('obsoleteCalls130', {}).items()}
+# Parameter lists of current (not obsolete) methods sharing an obsolete name: a call that fits one may be one of them.
+LIVE_SIGS = {}
 LIVE_CLASS = {}  # first class (by name) with a current method of that name
 for _cn in sorted(B):
     for _m, _ss in B[_cn]['methods'].items():
         if _m in OBSOLETE:
-            live = [len(s['params']) for s in _ss if not s.get('obsolete')]
-            LIVE_ARITY.setdefault(_m, set()).update(live)
+            live = [s['params'] for s in _ss if not s.get('obsolete')]
+            LIVE_SIGS.setdefault(_m, []).extend(live)
             if live:
                 LIVE_CLASS.setdefault(_m, _cn)
 # Obsolete overrides with their own, more specific note in PATTERNS.
 OBS_NOTED = {'OnCEUpdate', 'CreateFrontLight', 'CreateRearLight', 'GetNoiseReduction', 'GetNoiseReductionByWeather'}
 
 
-def obs_fits(d, a):
-    return d['req'] <= a <= d['n']
+def obs_fits(d, call):
+    return sig_fits(call, d['params'], d['req'])
 
 
-def obs_called(key, n):
-    """Whether 1.30 vanilla still calls the obsolete Class.method that takes n parameters."""
-    ds = [d for d in OBS_DEFS.get(key, []) if d['n'] == n] or OBS_DEFS.get(key, [])
-    return not ds or any(obs_fits(d, a) for d in ds for a in OBS_CALLS.get(key.split('.')[1], ()))
+def obs_called(key, params):
+    """Whether 1.30 vanilla still calls the obsolete Class.method with these parameter types."""
+    ds = OBS_DEFS.get(key, [])
+    ds = [d for d in ds if d['params'] == list(params)] or [d for d in ds if d['n'] == len(params)] or ds
+    return not ds or any(obs_fits(d, c) for d in ds for c in OBS_CALLS.get(key.split('.')[1], ()))
 
 # Matched against the code a 1.30 server compiles (inactive #ifdef branches and comments removed).
 PATTERNS = [
@@ -456,7 +458,8 @@ def scan_files(files):
                         if r29 and r30 and not (r29 & r30):
                             add('BREAK', 'override return type changed: ' + vc30 + '.' + mn + ' ' + '/'.join(sorted(r29)) + ' -> ' + '/'.join(sorted(r30)), rel)
                         if mn not in OBS_NOTED and any(m.get('obsolete') for m in ms30 if sig(m) == s):
-                            if obs_called(vc30 + '.' + mn, len(s)):
+                            live30 = {sig(m) for m in ms30 if not m.get('obsolete')}
+                            if obs_called(vc30 + '.' + mn, s) or any(o['override'] and sig(o) in live30 for o in ovs):
                                 add('INFO', 'overrides ' + vc30 + '.' + mn + '(), marked [Obsolete] in 1.30', rel)
                             else:
                                 add('RISK', 'overrides ' + vc30 + '.' + mn + '(), marked [Obsolete] in 1.30 and never called by 1.30 vanilla: the override does not run', rel)
@@ -479,12 +482,14 @@ def scan_files(files):
         for t in toks & OBSOLETE:
             if t in own:
                 continue
-            calls = call_arities(body, t)
+            calls = call_types(body, t)
             mine = [d for k, v in OBS_DEFS.items() if k.split('.')[1] == t for d in v]
-            if not calls or (mine and not any(obs_fits(d, a) for d in mine for a in calls)):
+            if mine:
+                calls = {c for c in calls if any(obs_fits(d, c) for d in mine)}
+            if not calls:
                 continue  # no call, or only the current overloads are called
-            ar = calls - LIVE_ARITY.get(t, set())
-            ds = [d for d in mine if any(obs_fits(d, a) for a in ar)]
+            ar = {c for c in calls if not any(sig_fits(c, p, len(p)) for p in LIVE_SIGS.get(t, []))}
+            ds = [d for d in mine if any(obs_fits(d, c) for c in ar)]
             if not ar:
                 obs = sorted(k for k in OBS_DEFS if k.split('.')[1] == t)
                 add('INFO', 'calls ' + t + '(): ' + ', '.join(obs) + '() is [Obsolete] in 1.30 but ' + LIVE_CLASS[t] + '.' + t + '() is not; check which one this call reaches', rel)

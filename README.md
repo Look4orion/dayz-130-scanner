@@ -66,7 +66,10 @@ Each script file is read twice, as a 1.29 server and as a 1.30 server compile it
   is `RISK` when 1.30 left the method as a placeholder (empty, or returning a constant) and the mod
   doesn't override it, because the call does nothing. Otherwise both are `INFO`. A call that could
   equally be a current method of the same name in another class is `INFO` and names both, and a
-  call that only fits a current overload isn't reported.
+  call that only fits a current overload isn't reported. Overloads are told apart by argument
+  types where they're obvious: literals, and variables declared earlier in the same file. A vanilla
+  call that also fits a current overload counts as calling that one, and an override of an obsolete
+  overload is only `INFO` when the same class also overrides the current one.
 
 **1.29** (`BREAK_129`, `RISK_129`), for builds that must still run on a 1.29 server:
 - `modded class` of, or `extends`, a class that only exists from 1.30.

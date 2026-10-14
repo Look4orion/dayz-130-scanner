@@ -147,9 +147,31 @@ function callArgs(src, i) {
 const CALL_KW = new Set(['return', 'new', 'else', 'case', 'delete']);
 const isWord = (c) => /[A-Za-z0-9_]/.test(c);
 
-// Argument counts of the calls to name() in stripped src. A type word before the name makes it a definition.
-function callArities(src, name, skipSuper = false) {
-  const out = new Set();
+const PRIM = new Set(['int', 'float', 'bool', 'string', 'vector']);
+const NOT_TYPE = new Set([...CALL_KW, 'out', 'inout', 'ref', 'const', 'notnull', 'autoptr', 'owned', 'static', 'auto',
+  'private', 'protected', 'override', 'proto', 'native', 'typename']);
+
+// Type of a call argument when it is obvious: a literal, or a variable declared earlier in src. '' if not.
+function argType(src, pos, a) {
+  a = pyStrip(a);
+  if (a === '""') return 'string';
+  if (fullmatch('-?[0-9]+', a)) return 'int';
+  if (fullmatch('-?(?:[0-9]+\\.[0-9]*|\\.[0-9]+)f?', a)) return 'float';
+  if (a === 'true' || a === 'false') return 'bool';
+  if (fullmatch('[A-Za-z_][A-Za-z0-9_]*', a)) {
+    let last = '';
+    for (const m of finditer(re('\\b([A-Za-z_][A-Za-z0-9_]*)\\s+' + a + '\\s*[;=,)]'), src.slice(0, pos))) {
+      if (!NOT_TYPE.has(m[1])) last = m[1].toLowerCase();
+    }
+    return last;
+  }
+  return '';
+}
+
+// Argument types (see argType) of the calls to name() in stripped src, as arrays, without repeats.
+// A type word before the name makes it a definition.
+function callTypes(src, name) {
+  const out = new Map();
   for (const m of finditer(re('\\b' + name + '\\s*\\('), src)) {
     let k = m.index - 1;
     while (k >= 0 && ' \t\n'.includes(src[k])) k -= 1;
@@ -158,12 +180,23 @@ function callArities(src, name, skipSuper = false) {
       while (w >= 0 && isWord(src[w])) w -= 1;
       if (!CALL_KW.has(src.slice(w + 1, k + 1))) continue;
     }
-    if (skipSuper && src.slice(Math.max(0, k - 5), k + 1) === 'super.') continue;
     const a = callArgs(src, m.index + m[0].length - 1);
-    if (a !== null) out.add(a.length === 1 && !a[0].trim() ? 0 : a.length);
+    if (a === null) continue;
+    const types = a.length === 1 && !pyStrip(a[0]) ? [] : a.map((x) => argType(src, m.index, x));
+    out.set(JSON.stringify(types), types);
   }
-  return out;
+  return [...out.values()];
 }
+
+// Whether an argument of type t (or unknown, '') can go into a parameter of normalised type p.
+function typeFits(t, p) {
+  if (p) p = p.split(' ').pop();
+  if (!t || !p || t === p || (t === 'int' && p === 'float')) return true;
+  return !PRIM.has(t) && !PRIM.has(p); // two classes: inheritance isn't checked
+}
+
+const sigFits = (types, params, req) =>
+  req <= types.length && types.length <= params.length && types.every((t, i) => typeFits(t, params[i]));
 
 function methodBodies(src, name) {
   const out = [];
@@ -348,26 +381,28 @@ export function makeScanner(vanilla) {
   }
   const OBSOLETE = new Set(vanilla.obsolete130);
   const OBS_DEFS = vanilla.obsoleteDefs130 || {};
-  const OBS_CALLS = new Map(Object.entries(vanilla.obsoleteCalls130 || {}).map(([n, a]) => [n, new Set(a)]));
-  const LIVE_ARITY = new Map();
+  // argument types vanilla still calls each obsolete name with ('' = unknown), calls that fit a current overload left out
+  const OBS_CALLS = new Map(Object.entries(vanilla.obsoleteCalls130 || {}));
+  const LIVE_SIGS = new Map();
   const LIVE_CLASS = new Map();
   for (const cn of [...B.keys()].sort()) {
     for (const [m, ss] of B.get(cn).methods) {
       if (!OBSOLETE.has(m)) continue;
-      if (!LIVE_ARITY.has(m)) LIVE_ARITY.set(m, new Set());
-      const live = ss.filter((s) => !s.obsolete).map((s) => s.params.length);
-      for (const n of live) LIVE_ARITY.get(m).add(n);
+      if (!LIVE_SIGS.has(m)) LIVE_SIGS.set(m, []);
+      const live = ss.filter((s) => !s.obsolete).map((s) => s.params);
+      LIVE_SIGS.get(m).push(...live);
       if (live.length && !LIVE_CLASS.has(m)) LIVE_CLASS.set(m, cn);
     }
   }
   const OBS_NOTED = new Set(['OnCEUpdate', 'CreateFrontLight', 'CreateRearLight', 'GetNoiseReduction', 'GetNoiseReductionByWeather']);
-  const obsFits = (d, a) => d.req <= a && a <= d.n;
-  const obsCalled = (key, n) => {
+  const obsFits = (d, call) => sigFits(call, d.params, d.req);
+  const obsCalled = (key, params) => {
     const all = OBS_DEFS[key] || [];
-    const exact = all.filter((d) => d.n === n);
-    const ds = exact.length ? exact : all;
-    const calls = OBS_CALLS.get(key.split('.')[1]) || new Set();
-    return !ds.length || ds.some((d) => [...calls].some((a) => obsFits(d, a)));
+    const same = all.filter((d) => JSON.stringify(d.params) === JSON.stringify(params));
+    const count = all.filter((d) => d.n === params.length);
+    const ds = same.length ? same : count.length ? count : all;
+    const calls = OBS_CALLS.get(key.split('.')[1]) || [];
+    return !ds.length || ds.some((d) => calls.some((c) => obsFits(d, c)));
   };
 
   function load(text) {
@@ -497,7 +532,10 @@ export function makeScanner(vanilla) {
                 add('BREAK', 'override return type changed: ' + vc30 + '.' + mn + ' ' + [...r29].sort().join('/') + ' -> ' + [...r30].sort().join('/'), rel);
               }
               if (!OBS_NOTED.has(mn) && ms30.some((m) => m.obsolete && sig(m) === s)) {
-                if (obsCalled(vc30 + '.' + mn, ov.params.length)) add('INFO', 'overrides ' + vc30 + '.' + mn + '(), marked [Obsolete] in 1.30', rel);
+                const live30 = new Set(ms30.filter((m) => !m.obsolete).map(sig));
+                if (obsCalled(vc30 + '.' + mn, ov.params) || ovs.some((o) => o.override && live30.has(sig(o)))) {
+                  add('INFO', 'overrides ' + vc30 + '.' + mn + '(), marked [Obsolete] in 1.30', rel);
+                }
                 else add('RISK', 'overrides ' + vc30 + '.' + mn + '(), marked [Obsolete] in 1.30 and never called by 1.30 vanilla: the override does not run', rel);
               }
             }
@@ -519,13 +557,13 @@ export function makeScanner(vanilla) {
           if (!(GENERIC.has(t) && !search(GENERIC.get(t), body)) && !own.has(t)) add('RISK', 'uses class ' + t + ', removed in 1.30', rel);
         }
         if (OBSOLETE.has(t) && !own.has(t)) {
-          const live = LIVE_ARITY.get(t) || new Set();
-          let calls = [...callArities(body, t)];
+          const live = LIVE_SIGS.get(t) || [];
+          let calls = callTypes(body, t);
           const mine = Object.entries(OBS_DEFS).filter(([k]) => k.split('.')[1] === t).flatMap(([, v]) => v);
-          // only the current overloads are called
-          if (mine.length && !mine.some((d) => calls.some((a) => obsFits(d, a)))) calls = [];
-          const ar = calls.filter((a) => !live.has(a));
-          const ds = mine.filter((d) => ar.some((a) => obsFits(d, a)));
+          // calls that only fit a current overload don't count
+          if (mine.length) calls = calls.filter((c) => mine.some((d) => obsFits(d, c)));
+          const ar = calls.filter((c) => !live.some((p) => sigFits(c, p, p.length)));
+          const ds = mine.filter((d) => ar.some((c) => obsFits(d, c)));
           if (calls.length && !ar.length) {
             const obs = Object.keys(OBS_DEFS).filter((k) => k.split('.')[1] === t).sort();
             add('INFO', 'calls ' + t + '(): ' + obs.join(', ') + '() is [Obsolete] in 1.30 but ' + LIVE_CLASS.get(t) + '.' + t + '() is not; check which one this call reaches', rel);
