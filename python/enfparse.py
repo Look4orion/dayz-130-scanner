@@ -234,3 +234,51 @@ def parse(src, defines=None):
     for c in classes:
         del c['_d']
     return classes
+
+
+def call_args(src, i):
+    """Top-level arguments of the call whose '(' is at src[i], or None if it never closes."""
+    args, depth, start, j = [], 0, i + 1, i
+    while j < len(src):
+        c = src[j]
+        if c == '"':
+            j += 1
+            while j < len(src) and src[j] != '"':
+                j += 2 if src[j] == '\\' else 1
+        elif c in '([{':
+            depth += 1
+        elif c in ')]}':
+            depth -= 1
+            if depth == 0:
+                args.append(src[start:j])
+                return args
+        elif c == ',' and depth == 1:
+            args.append(src[start:j])
+            start = j + 1
+        j += 1
+    return None
+
+
+CALL_KW = {'return', 'new', 'else', 'case', 'delete'}
+WORD = set('abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_')
+
+
+def call_arities(src, name, skip_super=False):
+    """Argument counts of the calls to name() in stripped src. A type word before the name makes it a definition."""
+    out = set()
+    for m in re.finditer(r'\b' + name + r'\s*\(', src):
+        k = m.start() - 1
+        while k >= 0 and src[k] in ' \t\n':
+            k -= 1
+        if k >= 0 and (src[k] in WORD or src[k] in '>]'):
+            w = k
+            while w >= 0 and src[w] in WORD:
+                w -= 1
+            if src[w + 1:k + 1] not in CALL_KW:
+                continue
+        if skip_super and src[max(0, k - 5):k + 1] == 'super.':
+            continue
+        a = call_args(src, m.end() - 1)
+        if a is not None:
+            out.add(0 if len(a) == 1 and not a[0].strip() else len(a))
+    return out

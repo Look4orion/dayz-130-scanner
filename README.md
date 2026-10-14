@@ -11,6 +11,9 @@ the page's Content-Security-Policy only lets it load its own files, plus a GoatC
 
 **Command line:** the same checks in Python 3, standard library only (see below).
 
+Made by Rook: [my DayZ mods on the Workshop](https://steamcommunity.com/id/rook1969/myworkshopfiles/) ·
+[support me on Ko-fi](https://ko-fi.com/rookmod).
+
 A clean result means no *known* breaker was found, not that the mod works. Read each hit in the
 code before reporting it to an author: the scanner matches by name, so a mod's own field that
 shares a name with something vanilla removed shows up as a "check by hand" hit.
@@ -58,7 +61,12 @@ Each script file is read twice, as a 1.29 server and as a 1.30 server compile it
   A backslash path into *another* mod's folder (one not under any of this mod's PBO prefixes) is
   `RISK` instead: mods list another mod's folder to pick up its `#define` for optional support, so
   on 1.30 that support can compile out.
-- `INFO`: calls and overrides of methods 1.30 marks `[Obsolete]` (they still compile).
+- **Methods 1.30 marks `[Obsolete]`** (they still compile). An override is `RISK` when 1.30 vanilla
+  no longer calls that method (with that argument count), because the override never runs. A call
+  is `RISK` when 1.30 left the method as a placeholder (empty, or returning a constant) and the mod
+  doesn't override it, because the call does nothing. Otherwise both are `INFO`. A call that could
+  equally be a current method of the same name in another class is `INFO` and names both, and a
+  call that only fits a current overload isn't reported.
 
 **1.29** (`BREAK_129`, `RISK_129`), for builds that must still run on a 1.29 server:
 - `modded class` of, or `extends`, a class that only exists from 1.30.

@@ -144,6 +144,27 @@ function callArgs(src, i) {
   return null;
 }
 
+const CALL_KW = new Set(['return', 'new', 'else', 'case', 'delete']);
+const isWord = (c) => /[A-Za-z0-9_]/.test(c);
+
+// Argument counts of the calls to name() in stripped src. A type word before the name makes it a definition.
+function callArities(src, name, skipSuper = false) {
+  const out = new Set();
+  for (const m of finditer(re('\\b' + name + '\\s*\\('), src)) {
+    let k = m.index - 1;
+    while (k >= 0 && ' \t\n'.includes(src[k])) k -= 1;
+    if (k >= 0 && (isWord(src[k]) || '>]'.includes(src[k]))) {
+      let w = k;
+      while (w >= 0 && isWord(src[w])) w -= 1;
+      if (!CALL_KW.has(src.slice(w + 1, k + 1))) continue;
+    }
+    if (skipSuper && src.slice(Math.max(0, k - 5), k + 1) === 'super.') continue;
+    const a = callArgs(src, m.index + m[0].length - 1);
+    if (a !== null) out.add(a.length === 1 && !a[0].trim() ? 0 : a.length);
+  }
+  return out;
+}
+
 function methodBodies(src, name) {
   const out = [];
   for (const m of finditer(re('\\b' + name + '\\s*\\([^;{}]*\\)\\s*\\{'), src)) {
@@ -326,6 +347,28 @@ export function makeScanner(vanilla) {
     }
   }
   const OBSOLETE = new Set(vanilla.obsolete130);
+  const OBS_DEFS = vanilla.obsoleteDefs130 || {};
+  const OBS_CALLS = new Map(Object.entries(vanilla.obsoleteCalls130 || {}).map(([n, a]) => [n, new Set(a)]));
+  const LIVE_ARITY = new Map();
+  const LIVE_CLASS = new Map();
+  for (const cn of [...B.keys()].sort()) {
+    for (const [m, ss] of B.get(cn).methods) {
+      if (!OBSOLETE.has(m)) continue;
+      if (!LIVE_ARITY.has(m)) LIVE_ARITY.set(m, new Set());
+      const live = ss.filter((s) => !s.obsolete).map((s) => s.params.length);
+      for (const n of live) LIVE_ARITY.get(m).add(n);
+      if (live.length && !LIVE_CLASS.has(m)) LIVE_CLASS.set(m, cn);
+    }
+  }
+  const OBS_NOTED = new Set(['OnCEUpdate', 'CreateFrontLight', 'CreateRearLight', 'GetNoiseReduction', 'GetNoiseReductionByWeather']);
+  const obsFits = (d, a) => d.req <= a && a <= d.n;
+  const obsCalled = (key, n) => {
+    const all = OBS_DEFS[key] || [];
+    const exact = all.filter((d) => d.n === n);
+    const ds = exact.length ? exact : all;
+    const calls = OBS_CALLS.get(key.split('.')[1]) || new Set();
+    return !ds.length || ds.some((d) => [...calls].some((a) => obsFits(d, a)));
+  };
 
   function load(text) {
     const out = { raw: text };
@@ -376,10 +419,14 @@ export function makeScanner(vanilla) {
     const memo29 = new Map();
     // methods and fields the mod declares in any of its files (overrides excluded)
     const modOwn = new Set();
+    const modOverrides = new Set(); // a call to one of these may reach the mod's own body
     for (const p of parsed) {
       for (const tag of ['130', '129']) {
         for (const c of p.load[tag][1]) {
-          for (const [mn, ovs] of c.methods) if (!anyOverride(ovs)) modOwn.add(mn);
+          for (const [mn, ovs] of c.methods) {
+            if (!anyOverride(ovs)) modOwn.add(mn);
+            else modOverrides.add(mn);
+          }
           for (const f of c.fields) modOwn.add(f);
         }
       }
@@ -449,7 +496,10 @@ export function makeScanner(vanilla) {
               if (r29.size && r30.size && ![...r29].some((r) => r30.has(r))) {
                 add('BREAK', 'override return type changed: ' + vc30 + '.' + mn + ' ' + [...r29].sort().join('/') + ' -> ' + [...r30].sort().join('/'), rel);
               }
-              if (ms30.some((m) => m.obsolete && sig(m) === s)) add('INFO', 'overrides ' + vc30 + '.' + mn + '(), marked [Obsolete] in 1.30', rel);
+              if (!OBS_NOTED.has(mn) && ms30.some((m) => m.obsolete && sig(m) === s)) {
+                if (obsCalled(vc30 + '.' + mn, ov.params.length)) add('INFO', 'overrides ' + vc30 + '.' + mn + '(), marked [Obsolete] in 1.30', rel);
+                else add('RISK', 'overrides ' + vc30 + '.' + mn + '(), marked [Obsolete] in 1.30 and never called by 1.30 vanilla: the override does not run', rel);
+              }
             }
           }
         }
@@ -468,7 +518,21 @@ export function makeScanner(vanilla) {
         if (REMOVED_CLASSES.has(t)) {
           if (!(GENERIC.has(t) && !search(GENERIC.get(t), body)) && !own.has(t)) add('RISK', 'uses class ' + t + ', removed in 1.30', rel);
         }
-        if (OBSOLETE.has(t) && !own.has(t) && search(re('\\b' + t + '\\s*\\('), body)) add('INFO', 'calls ' + t + '() marked [Obsolete] in 1.30', rel);
+        if (OBSOLETE.has(t) && !own.has(t)) {
+          const live = LIVE_ARITY.get(t) || new Set();
+          let calls = [...callArities(body, t)];
+          const mine = Object.entries(OBS_DEFS).filter(([k]) => k.split('.')[1] === t).flatMap(([, v]) => v);
+          // only the current overloads are called
+          if (mine.length && !mine.some((d) => calls.some((a) => obsFits(d, a)))) calls = [];
+          const ar = calls.filter((a) => !live.has(a));
+          const ds = mine.filter((d) => ar.some((a) => obsFits(d, a)));
+          if (calls.length && !ar.length) {
+            const obs = Object.keys(OBS_DEFS).filter((k) => k.split('.')[1] === t).sort();
+            add('INFO', 'calls ' + t + '(): ' + obs.join(', ') + '() is [Obsolete] in 1.30 but ' + LIVE_CLASS.get(t) + '.' + t + '() is not; check which one this call reaches', rel);
+          } else if (calls.length && ds.length && ds.every((d) => d.stub) && !modOverrides.has(t)) {
+            add('RISK', 'calls ' + t + '(), which 1.30 left as a placeholder (empty, or returns a fixed value): it compiles but does nothing', rel);
+          } else if (calls.length) add('INFO', 'calls ' + t + '() marked [Obsolete] in 1.30', rel);
+        }
         if (NOW_PROTECTED.has(t) && !own.has(t)) {
           for (const m of finditer(re('(\\w+)\\s*\\.\\s*' + t + '\\s*\\('), body)) {
             if (m[1] !== 'super' && m[1] !== 'this') {

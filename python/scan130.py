@@ -3,7 +3,7 @@ Usage: scan130.py vanilla.json <modsrc dir> <out.json> [mods.tsv <mods root>]
 With mods.tsv and the mods root (as for extract.py), CfgMods script paths are checked too."""
 import sys, os, json, re, glob
 sys.path.insert(0, os.path.dirname(__file__))
-from enfparse import parse, strip, preprocess, nocomment, V129, V130
+from enfparse import parse, strip, preprocess, nocomment, call_args, call_arities, V129, V130
 
 V = json.load(open(sys.argv[1]))
 A, B = V['129'], V['130']
@@ -117,6 +117,30 @@ for cn, c in A.items():
 
 # [Obsolete] methods in 1.30 (vanilla.py collects them)
 OBSOLETE = set(V['obsolete130'])
+OBS_DEFS = V.get('obsoleteDefs130', {})  # "Class.method" -> [{n, req, stub}]
+OBS_CALLS = {n: set(a) for n, a in V.get('obsoleteCalls130', {}).items()}  # argument counts vanilla calls them with
+# Parameter counts of current (not obsolete) methods sharing an obsolete name: a call with that count may be one of them.
+LIVE_ARITY = {}
+LIVE_CLASS = {}  # first class (by name) with a current method of that name
+for _cn in sorted(B):
+    for _m, _ss in B[_cn]['methods'].items():
+        if _m in OBSOLETE:
+            live = [len(s['params']) for s in _ss if not s.get('obsolete')]
+            LIVE_ARITY.setdefault(_m, set()).update(live)
+            if live:
+                LIVE_CLASS.setdefault(_m, _cn)
+# Obsolete overrides with their own, more specific note in PATTERNS.
+OBS_NOTED = {'OnCEUpdate', 'CreateFrontLight', 'CreateRearLight', 'GetNoiseReduction', 'GetNoiseReductionByWeather'}
+
+
+def obs_fits(d, a):
+    return d['req'] <= a <= d['n']
+
+
+def obs_called(key, n):
+    """Whether 1.30 vanilla still calls the obsolete Class.method that takes n parameters."""
+    ds = [d for d in OBS_DEFS.get(key, []) if d['n'] == n] or OBS_DEFS.get(key, [])
+    return not ds or any(obs_fits(d, a) for d in ds for a in OBS_CALLS.get(key.split('.')[1], ()))
 
 # Matched against the code a 1.30 server compiles (inactive #ifdef branches and comments removed).
 PATTERNS = [
@@ -180,29 +204,6 @@ def debug_spans(src):
             i += 1
         spans.append((m.start(), i))
     return spans
-
-
-def call_args(src, i):
-    """Top-level arguments of the call whose '(' is at src[i], or None if it never closes."""
-    args, depth, start, j = [], 0, i + 1, i
-    while j < len(src):
-        c = src[j]
-        if c == '"':
-            j += 1
-            while j < len(src) and src[j] != '"':
-                j += 2 if src[j] == '\\' else 1
-        elif c in '([{':
-            depth += 1
-        elif c in ')]}':
-            depth -= 1
-            if depth == 0:
-                args.append(src[start:j])
-                return args
-        elif c == ',' and depth == 1:
-            args.append(src[start:j])
-            start = j + 1
-        j += 1
-    return None
 
 
 def method_bodies(src, name):
@@ -367,10 +368,12 @@ def scan_files(files):
     modclasses = own_classes(parsed)
     # methods and fields the mod declares in any of its files (overrides excluded)
     mod_own = set()
+    mod_overrides = set()  # a call to one of these may reach the mod's own body
     for _, p in parsed:
         for tag in ('130', '129'):
             for c in p[tag][1]:
                 mod_own.update(m for m, o in c['methods'].items() if not any(v['override'] for v in o))
+                mod_overrides.update(m for m, o in c['methods'].items() if any(v['override'] for v in o))
                 mod_own.update(c['fields'])
     mod30 = '\n'.join(p['130'][0] for _, p in parsed)
     mod29 = '\n'.join(p['129'][0] for _, p in parsed)
@@ -449,8 +452,11 @@ def scan_files(files):
                         r30 = {m['ret'] for m in ms30 if sig(m) == s}
                         if r29 and r30 and not (r29 & r30):
                             add('BREAK', 'override return type changed: ' + vc30 + '.' + mn + ' ' + '/'.join(sorted(r29)) + ' -> ' + '/'.join(sorted(r30)), rel)
-                        if any(m.get('obsolete') for m in ms30 if sig(m) == s):
-                            add('INFO', 'overrides ' + vc30 + '.' + mn + '(), marked [Obsolete] in 1.30', rel)
+                        if mn not in OBS_NOTED and any(m.get('obsolete') for m in ms30 if sig(m) == s):
+                            if obs_called(vc30 + '.' + mn, len(s)):
+                                add('INFO', 'overrides ' + vc30 + '.' + mn + '(), marked [Obsolete] in 1.30', rel)
+                            else:
+                                add('RISK', 'overrides ' + vc30 + '.' + mn + '(), marked [Obsolete] in 1.30 and never called by 1.30 vanilla: the override does not run', rel)
         body = strip(src30)
         own = set(modclasses) | mod_own
         for c in cls:
@@ -468,7 +474,20 @@ def scan_files(files):
             if t not in own:
                 add('RISK', 'uses class ' + t + ', removed in 1.30', rel)
         for t in toks & OBSOLETE:
-            if t not in own and re.search(r'\b' + t + r'\s*\(', body):
+            if t in own:
+                continue
+            calls = call_arities(body, t)
+            mine = [d for k, v in OBS_DEFS.items() if k.split('.')[1] == t for d in v]
+            if not calls or (mine and not any(obs_fits(d, a) for d in mine for a in calls)):
+                continue  # no call, or only the current overloads are called
+            ar = calls - LIVE_ARITY.get(t, set())
+            ds = [d for d in mine if any(obs_fits(d, a) for a in ar)]
+            if not ar:
+                obs = sorted(k for k in OBS_DEFS if k.split('.')[1] == t)
+                add('INFO', 'calls ' + t + '(): ' + ', '.join(obs) + '() is [Obsolete] in 1.30 but ' + LIVE_CLASS[t] + '.' + t + '() is not; check which one this call reaches', rel)
+            elif ds and all(d['stub'] for d in ds) and t not in mod_overrides:
+                add('RISK', 'calls ' + t + '(), which 1.30 left as a placeholder (empty, or returns a fixed value): it compiles but does nothing', rel)
+            else:
                 add('INFO', 'calls ' + t + '() marked [Obsolete] in 1.30', rel)
         for t in toks & set(NOW_PROTECTED):
             if t in own:
