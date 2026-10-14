@@ -533,10 +533,11 @@ export function makeScanner(vanilla) {
               }
               if (!OBS_NOTED.has(mn) && ms30.some((m) => m.obsolete && sig(m) === s)) {
                 const live30 = new Set(ms30.filter((m) => !m.obsolete).map(sig));
-                if (obsCalled(vc30 + '.' + mn, ov.params) || ovs.some((o) => o.override && live30.has(sig(o)))) {
-                  add('INFO', 'overrides ' + vc30 + '.' + mn + '(), marked [Obsolete] in 1.30', rel);
-                }
-                else add('RISK', 'overrides ' + vc30 + '.' + mn + '(), marked [Obsolete] in 1.30 and never called by 1.30 vanilla: the override does not run', rel);
+                const also = ovs.filter((o) => o.override && live30.has(sig(o)));
+                const what = 'overrides ' + vc30 + '.' + mn + '(' + ov.params.join(', ') + '), marked [Obsolete] in 1.30';
+                if (also.length) add('INFO', what + '; the same class also overrides the current (' + also[0].params.join(', ') + ') version, so nothing is lost', rel);
+                else if (obsCalled(vc30 + '.' + mn, ov.params)) add('INFO', what, rel);
+                else add('RISK', what + ' and never called by 1.30 vanilla: the override does not run', rel);
               }
             }
           }

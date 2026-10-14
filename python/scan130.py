@@ -459,10 +459,14 @@ def scan_files(files):
                             add('BREAK', 'override return type changed: ' + vc30 + '.' + mn + ' ' + '/'.join(sorted(r29)) + ' -> ' + '/'.join(sorted(r30)), rel)
                         if mn not in OBS_NOTED and any(m.get('obsolete') for m in ms30 if sig(m) == s):
                             live30 = {sig(m) for m in ms30 if not m.get('obsolete')}
-                            if obs_called(vc30 + '.' + mn, s) or any(o['override'] and sig(o) in live30 for o in ovs):
-                                add('INFO', 'overrides ' + vc30 + '.' + mn + '(), marked [Obsolete] in 1.30', rel)
+                            also = [sig(o) for o in ovs if o['override'] and sig(o) in live30]
+                            what = 'overrides ' + vc30 + '.' + mn + '(' + ', '.join(s) + '), marked [Obsolete] in 1.30'
+                            if also:
+                                add('INFO', what + '; the same class also overrides the current (' + ', '.join(also[0]) + ') version, so nothing is lost', rel)
+                            elif obs_called(vc30 + '.' + mn, s):
+                                add('INFO', what, rel)
                             else:
-                                add('RISK', 'overrides ' + vc30 + '.' + mn + '(), marked [Obsolete] in 1.30 and never called by 1.30 vanilla: the override does not run', rel)
+                                add('RISK', what + ' and never called by 1.30 vanilla: the override does not run', rel)
         body = strip(src30)
         own = set(modclasses) | mod_own
         for c in cls:
