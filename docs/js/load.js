@@ -1,5 +1,5 @@
-import { extractScripts, backslashPaths } from './pbo.js';
-import { decodeText } from './pyre.js';
+import { extractScripts, backslashPaths } from './pbo.js?v=202610142320';
+import { decodeText } from './pyre.js?v=202610142320';
 
 export async function loadMod(mod, rel = (pbo, name) => pbo + '/' + name) {
   const out = { id: mod.id, mod: mod.mod, kind: mod.kind, files: [], scriptPaths: [], pbos: [] };

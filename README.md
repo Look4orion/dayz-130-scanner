@@ -133,6 +133,10 @@ python -I python/scan130.py docs/vanilla.json --pbo mods.tsv <mods folder> py.js
 node tools/parity.mjs docs/vanilla.json mods.tsv <mods folder> js.json
 python -I tools/compare.py py.json js.json
 ```
+Before pushing a change under `docs`, run `python -I tools/stamp.py`. It puts a new `?v=` on every
+file the page loads, so a browser holding cached files from the last release can't mix them with
+the new ones.
+
 To try the page locally, serve `docs` (for example `python -m http.server -d docs`): browsers don't
 run module scripts from `file://`.
 
