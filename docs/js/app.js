@@ -25,19 +25,37 @@ function el(tag, attrs = {}, ...kids) {
 }
 
 // ---- collecting files ----
+// Only the files a scan reads are opened; anything that can't be read is skipped and counted.
+const wanted = (name) => {
+  const low = name.toLowerCase();
+  return low.endsWith('.pbo') || low === 'meta.cpp' || low === 'mod.cpp';
+};
+
+// A folder link (the DayZ Launcher's !Workshop folders are junctions) can make a read never answer.
+const timed = (p) => Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error('timed out')), 5000))]);
+
 async function entriesFromDrop(items) {
   const out = [];
+  let seen = 0;
+  let skipped = 0;
   const walk = async (entry, path) => {
-    if (entry.isFile) {
-      const file = await new Promise((res, rej) => entry.file(res, rej));
-      out.push({ path: path + entry.name, file });
-    } else if (entry.isDirectory) {
-      const reader = entry.createReader();
-      for (;;) {
-        const batch = await new Promise((res, rej) => reader.readEntries(res, rej));
-        if (!batch.length) break;
-        for (const e of batch) await walk(e, path + entry.name + '/');
+    seen += 1;
+    if (seen % 200 === 0) status.textContent = `Collecting files... ${seen} looked at, ${out.length} to scan`;
+    try {
+      if (entry.isFile) {
+        if (!wanted(entry.name)) return;
+        const file = await timed(new Promise((res, rej) => entry.file(res, rej)));
+        out.push({ path: path + entry.name, file });
+      } else if (entry.isDirectory) {
+        const reader = entry.createReader();
+        for (;;) {
+          const batch = await timed(new Promise((res, rej) => reader.readEntries(res, rej)));
+          if (!batch.length) break;
+          for (const e of batch) await walk(e, path + entry.name + '/');
+        }
       }
+    } catch {
+      skipped += 1;
     }
   };
   const roots = [];
@@ -46,7 +64,7 @@ async function entriesFromDrop(items) {
     if (entry) roots.push(entry);
   }
   for (const r of roots) await walk(r, '');
-  return out;
+  return { files: out, skipped };
 }
 
 const metaName = /^\s*name\s*=\s*"([^"]*)"/m;
@@ -106,7 +124,7 @@ function run(groups) {
   status.textContent = 'Starting...';
   drop.classList.add('busy');
   if (worker) worker.terminate();
-  worker = new Worker(new URL('./worker.js?v=202610142320', import.meta.url), { type: 'module' });
+  worker = new Worker(new URL('./worker.js?v=202610142344', import.meta.url), { type: 'module' });
   worker.onmessage = (ev) => {
     const d = ev.data;
     if (d.type === 'progress') {
@@ -271,8 +289,18 @@ drop.addEventListener('drop', async (e) => {
   e.preventDefault();
   drop.classList.remove('over');
   status.textContent = 'Collecting files...';
-  const files = await entriesFromDrop([...e.dataTransfer.items]);
-  run(await groupMods(files));
+  try {
+    const { files, skipped } = await entriesFromDrop([...e.dataTransfer.items]);
+    const groups = await groupMods(files);
+    if (!groups.length && skipped) {
+      status.textContent = "The browser couldn't open that folder. Mod folders under DayZ\\!Workshop are links, which browsers don't follow: drop the mod's addons folder, or the mod's real folder in steamapps\\workshop\\content\\221100.";
+      return;
+    }
+    run(groups);
+    if (skipped) status.textContent += ` (${skipped} file${skipped === 1 ? '' : 's'} or folder${skipped === 1 ? '' : 's'} couldn't be read and were skipped)`;
+  } catch (err) {
+    status.textContent = 'Could not read what was dropped: ' + (err && err.message ? err.message : err) + '. Try "Choose folder" instead.';
+  }
 });
 $('pick-folder').addEventListener('change', async (e) => {
   const files = [...e.target.files].map((f) => ({ path: f.webkitRelativePath || f.name, file: f }));

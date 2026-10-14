@@ -1,11 +1,11 @@
-import { makeScanner } from './scan.js?v=202610142320';
-import { loadMod } from './load.js?v=202610142320';
+import { makeScanner } from './scan.js?v=202610142344';
+import { loadMod } from './load.js?v=202610142344';
 
 let scannerPromise = null;
 
 function getScanner() {
   if (!scannerPromise) {
-    scannerPromise = fetch(new URL('../vanilla.json?v=202610142320', import.meta.url))
+    scannerPromise = fetch(new URL('../vanilla.json?v=202610142344', import.meta.url))
       .then((r) => {
         if (!r.ok) throw new Error('could not load vanilla.json (' + r.status + ')');
         return r.json();
