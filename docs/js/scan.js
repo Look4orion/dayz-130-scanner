@@ -1,6 +1,6 @@
 // Port of python/scan130.py.
-import { re, search, finditer, findall, fullmatch, countChar, strip as pyStrip } from './pyre.js?v=202610150646';
-import { parse, strip, preprocess, nocomment, V129, V130 } from './enfparse.js?v=202610150646';
+import { re, search, finditer, findall, fullmatch, countChar, strip as pyStrip } from './pyre.js?v=202610151008';
+import { parse, strip, preprocess, nocomment, V129, V130 } from './enfparse.js?v=202610151008';
 
 const LEVELS = ['BREAK', 'RISK', 'INFO', 'BREAK_129', 'RISK_129'];
 
@@ -110,6 +110,24 @@ const OTHER_PATH_INFO = "CfgMods script path with backslashes into another mod's
 const TOP_DECL = re('^\\s*(?:enum\\s+(\\w+)|typedef\\s+[\\w<>, ]+?\\s+(\\w+)\\s*;)', 'M');
 const EMPTY_ONLY = '(?:\\s*class\\s+\\w+\\s*(?::|extends)\\s*\\w+\\s*\\{\\s*\\}\\s*;?)*\\s*';
 const IFDEF = re('^\\s*#\\s*ifn?def\\b', 'M');
+const CORE_DIR = re('(^|/)1_core/', 'I');
+const CORE_GATE = re('^[ \\t]*#[ \\t]*ifn?def[ \\t]+DAYZ_1_\\d+\\b', 'M');
+const CORE_GATE_MSG = 'version gate (#ifdef/#ifndef DAYZ_1_xx) in a 1_Core script: the version defines are not set yet ' +
+  'when the Core module compiles (measured on 1.29), so it always takes the "not defined" branch';
+const WORKBENCH_DIR = re('(?:^|/)workbench/', 'I');
+const MODULE_DIR = re('(?:^|/)([1-5])_(?:core|gamelib|game|world|mission)/', 'I');
+const VAR_DECL = re('\\b([A-Za-z_]\\w*)(?:\\s*<[^<>;{}]*>)?\\s+([A-Za-z_]\\w*)\\s*(?=[=;,)\\[])');
+const NOT_TYPES = new Set(['return', 'new', 'delete', 'class', 'extends', 'modded', 'typedef', 'case', 'else', 'out', 'inout',
+  'ref', 'autoptr', 'notnull', 'const', 'static', 'private', 'protected', 'override', 'proto', 'native',
+  'goto', 'throw', 'enum', 'sealed', 'event', 'external', 'volatile', 'reference']);
+const NAME_CLASH_MSG = "variable named like another mod's class: with both mods loaded the module does not compile " +
+  '("Variable name \'...\' already used as type name")';
+const NAME_CLASH_RISK = "variable named like another mod's class: fails to compile with both loaded if that class is " +
+  'visible from this module (module of one of them unknown)';
+const moduleRank = (rel) => {
+  const m = search(MODULE_DIR, rel);
+  return m ? Number(m[1]) : null;
+};
 
 // Whether s uses name where only a type can stand (a variable of that name doesn't count).
 function typeUse(s, n) {
@@ -460,6 +478,43 @@ export function makeScanner(vanilla) {
 
   const anyOverride = (ovs) => ovs.some((o) => o.override);
 
+  const LOWER_B = new Map([...B.keys()].map((c) => [c.toLowerCase(), c]));
+  // Vanilla 1.30 class of the receiver in a "x.t(" / "Class.t(" / "Getter().t(" match, or null.
+  function receiverClass(body, m, modclasses) {
+    const [, dot, name, call] = m;
+    if (dot !== undefined && call === undefined) return null; // a.b.t(): field type unknown
+    if (call !== undefined) {
+      const rets = new Set();
+      for (const c of B.values()) for (const s of c.methods.get(name) || []) if (s.ret) rets.add(s.ret.split(/\s+/).pop());
+      return rets.size === 1 ? LOWER_B.get([...rets][0]) || null : null;
+    }
+    if (B.has(name)) return name;
+    let typ = null;
+    for (const d of finditer(re('\\b(\\w+)\\s+' + name + '\\s*[=;,)]'), body)) {
+      if (!['return', 'new', 'delete', 'out', 'inout', 'ref', 'autoptr'].includes(d[1])) {
+        typ = d[1];
+        break;
+      }
+    }
+    if (B.has(typ)) return typ;
+    return modclasses.has(typ) ? vanillaBase(modclasses.get(typ), modclasses, B) : null;
+  }
+
+  // Vanilla classes that define t for every t() call, or empty if any call's receiver is unknown.
+  function callClasses(body, t, modclasses) {
+    const out = new Set();
+    let n = 0;
+    for (const m of finditer(re('(\\.\\s*)?\\b(\\w+)\\s*(\\((?:[^()]|\\([^()]*\\))*\\))?\\s*\\.\\s*' + t + '\\s*\\('), body)) {
+      n++;
+      const vc = receiverClass(body, m, modclasses);
+      const cls = vc ? findMethod(B, vc, t)[0] : null;
+      if (!cls) return [];
+      out.add(cls);
+    }
+    if (n !== findall(re('\\b' + t + '\\s*\\('), body).length) return [];
+    return [...out];
+  }
+
   // [["Class.t", declared type]] for every x.t() call whose x has a declared type; empty if any call can't be resolved.
   function receivers(body, t, modclasses) {
     const out = new Map();
@@ -512,6 +567,7 @@ export function makeScanner(vanilla) {
       const [src30, cls] = p.load['130'];
       const [src29, cls29] = p.load['129'];
       for (const [level, msg, rx] of RAW_PATTERNS) for (const m of finditer(rx, p.load.raw)) add(level, msg, rel + ':' + (countChar(p.load.raw, '\n', 0, m.index) + 1));
+      if (search(CORE_DIR, rel)) for (const m of finditer(CORE_GATE, p.load.raw)) add('RISK', CORE_GATE_MSG, rel + ':' + (countChar(p.load.raw, '\n', 0, m.index) + 1));
       const spans = debugSpans(src30);
       for (const [level, msg, rx] of PATTERNS) {
         for (const m of finditer(rx, src30)) {
@@ -672,7 +728,9 @@ export function makeScanner(vanilla) {
       // methods only, called as name(...): new field names (ammoType, orientation, OFF) are ordinary words
       for (const t of toks29) {
         if (NEW_METHODS.has(t) && !own29.has(t) && !G.names.has(t) && search(re('\\b' + t + '\\s*\\('), body29)) {
-          add('RISK_129', 'calls ' + NEW_METHODS.get(t) + ', which only exists from 1.30', rel);
+          const on = callClasses(body29, t, modclasses);
+          if (on.length) add('BREAK_129', 'calls ' + on.sort()[0] + '.' + t + '(), which 1.29 does not have: does not compile on 1.29', rel);
+          else add('RISK_129', 'calls ' + NEW_METHODS.get(t) + ', which only exists from 1.30', rel);
         }
         if (NEW_CLASSES.has(t) && !own29.has(t) && !G.classes.has(t)) add('RISK_129', 'uses class ' + t + ', which only exists from 1.30', rel);
       }
@@ -783,6 +841,41 @@ export function makeScanner(vanilla) {
       return ['RISK', SKIP_LOST_MSG, ''];
     };
 
+    // Variables named like a class another scanned mod declares ("Variable name '...' already used as type name").
+    const typeOwners = new Map(); // type name -> [[mod id, module rank]]
+    for (const m of mods) {
+      for (const f of m.files) {
+        for (const t of fileDecls(f)[0]) {
+          if (!typeOwners.has(t)) typeOwners.set(t, []);
+          typeOwners.get(t).push([m.id, moduleRank(f.rel)]);
+        }
+      }
+    }
+    const modName = new Map(mods.map((m) => [m.id, m.mod]));
+    const nameClashes = (m) => {
+      const mine = new Set([...typeOwners].filter(([, o]) => o.some(([id]) => id === m.id)).map(([t]) => t));
+      const out = [];
+      for (const f of m.files) {
+        if (search(WORKBENCH_DIR, f.rel)) continue; // Workbench editor plugins are not compiled by the game
+        fileDecls(f);
+        const rank = moduleRank(f.rel);
+        const seen = new Set();
+        for (const d of finditer(VAR_DECL, texts.get(f.rel))) {
+          const [, typ, v] = d;
+          if (NOT_TYPES.has(typ) || seen.has(v) || mine.has(v) || B.has(v) || !typeOwners.has(v)) continue;
+          const others = typeOwners.get(v).filter(([id]) => id !== m.id);
+          const known = others.filter(([, r]) => r !== null && rank !== null);
+          const hit = known.filter(([, r]) => r <= rank).map(([id]) => id);
+          const where = f.rel + ' (' + v + ', a class in ' + modName.get((hit.length ? hit : others.map(([id]) => id))[0]) + ')';
+          if (hit.length) out.push(['BREAK', where]);
+          else if (known.length < others.length) out.push(['RISK', where]);
+          else continue;
+          seen.add(v);
+        }
+      }
+      return out;
+    };
+
     const report = {};
     mods.forEach((m, k) => {
       if (progress) progress(k, mods.length, m.mod);
@@ -797,6 +890,11 @@ export function makeScanner(vanilla) {
           if (!r[level][msg]) r[level][msg] = [];
           r[level][msg].push(where + detail);
         }
+      }
+      for (const [level, where] of nameClashes(m)) {
+        const msg = level === 'BREAK' ? NAME_CLASH_MSG : NAME_CLASH_RISK;
+        if (!r[level][msg]) r[level][msg] = [];
+        r[level][msg].push(where);
       }
       r.unscanned_pbos = m.pbos.filter((p) => p.unreadable).map((p) => p.name);
       r.packed_pbos = m.pbos.filter((p) => p.compressed).map((p) => p.name);

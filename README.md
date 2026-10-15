@@ -55,6 +55,15 @@ Each script file is read twice, as a 1.29 server and as a 1.30 server compile it
   1.30; the car still gets vanilla's default headlights, not its own brightness/range/colour.
 - **Wrong version gates** (`RISK`): `#ifdef DAYZ_1_30` (off again on 1.31; use `#ifndef DAYZ_1_29`)
   and `BUILD_EXPERIMENTAL` (gone on 1.30 stable).
+- **Version gates in `1_Core`** (`RISK`): `#ifdef`/`#ifndef DAYZ_1_xx` in a 1_Core script. The
+  version defines aren't set yet when the Core module compiles (measured on 1.29), so the gate
+  always takes the "not defined" branch. Use a runtime fallback there instead.
+- **A variable named like another mod's class** (`BREAK`): a variable, parameter or field whose
+  name is a class, enum or typedef another scanned mod declares, in a module that can see it
+  (`1_Core` < `2_GameLib` < `3_Game` < `4_World` < `5_Mission`). With both mods loaded the module
+  fails with "Variable name '...' already used as type name" (COT's kill-stats `c7` against
+  CarPack's `class c7`). `RISK` when a module can't be told from the path. Workbench plugins are
+  skipped.
 - **Methods 1.30 made protected** (`RISK`), called from outside the class.
 - **CfgMods script paths with backslashes**: 1.30 compiles none of that folder's scripts and logs
   nothing. Only `*ScriptModule` entries count; image sets with backslashes still load. The grade
@@ -85,7 +94,10 @@ Each script file is read twice, as a 1.29 server and as a 1.30 server compile it
 **1.29** (`BREAK_129`, `RISK_129`), for builds that must still run on a 1.29 server:
 - `modded class` of, or `extends`, a class that only exists from 1.30.
 - Overrides of a method that only exists from 1.30, or written with its 1.30 signature.
-- `RISK_129`: calls of methods and uses of classes that only exist from 1.30.
+- Calls of methods that only exist from 1.30: `BREAK_129` when the receiver's class is known (a
+  variable's declared type, `Class.Method()`, or a getter with one return type, as in
+  `GetGame().GetContentDLCService().GetDLCFromWorld()`), `RISK_129` otherwise. Uses of classes
+  that only exist from 1.30 are `RISK_129`.
 
 A method or field a mod declares in any of its own files counts as the mod's own, so calling it is
 never mistaken for the vanilla name (overrides don't count: a call may still reach vanilla's).

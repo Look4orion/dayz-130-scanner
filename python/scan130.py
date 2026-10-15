@@ -208,6 +208,10 @@ OTHER_PATH_INFO = ("CfgMods script path with backslashes into another mod's fold
 TOP_DECL = re.compile(r'^\s*(?:enum\s+(\w+)|typedef\s+[\w<>, ]+?\s+(\w+)\s*;)', re.M)
 EMPTY_ONLY = re.compile(r'^(?:\s*class\s+\w+\s*(?::|extends)\s*\w+\s*\{\s*\}\s*;?)*\s*$')
 IFDEF = re.compile(r'^\s*#\s*ifn?def\b', re.M)
+CORE_DIR = re.compile(r'(^|/)1_core/', re.I)
+CORE_GATE = re.compile(r'^[ \t]*#[ \t]*ifn?def[ \t]+DAYZ_1_\d+\b', re.M)
+CORE_GATE_MSG = ('version gate (#ifdef/#ifndef DAYZ_1_xx) in a 1_Core script: the version defines are not set yet '
+                 'when the Core module compiles (measured on 1.29), so it always takes the "not defined" branch')
 OTHER_PATH_MSG = ("CfgMods script path with backslashes into another mod's folder: 1.30 skips the entry, so code that "
                   "needs that mod's scripts (often its #define for optional support) can compile out")
 
@@ -391,6 +395,41 @@ def receivers(body, t, modclasses):
     return out
 
 
+LOWER_B = {c.lower(): c for c in B}
+
+
+def receiver_class(body, m, modclasses):
+    """Vanilla 1.30 class of the receiver in a "x.t(" / "Class.t(" / "Getter().t(" match, or None."""
+    dot, name, call = m.group(1), m.group(2), m.group(3)
+    if dot and not call:
+        return None  # a.b.t(): field type unknown
+    if call:
+        rets = {s['ret'].split()[-1] for c in B.values() for s in c['methods'].get(name, []) if s['ret']}
+        return LOWER_B.get(rets.pop()) if len(rets) == 1 else None
+    if name in B:
+        return name
+    typ = next((d.group(1) for d in re.finditer(r'\b(\w+)\s+' + name + r'\s*[=;,)]', body)
+                if d.group(1) not in ('return', 'new', 'delete', 'out', 'inout', 'ref', 'autoptr')), None)
+    if typ in B:
+        return typ
+    return vanilla_base(modclasses[typ], modclasses, B) if typ in modclasses else None
+
+
+def call_classes(body, t, modclasses):
+    """Vanilla classes that define t for every t() call, or empty if any call's receiver is unknown."""
+    out, n = set(), 0
+    for m in re.finditer(r'(\.\s*)?\b(\w+)\s*(\((?:[^()]|\([^()]*\))*\))?\s*\.\s*' + t + r'\s*\(', body):
+        n += 1
+        vc = receiver_class(body, m, modclasses)
+        cls = find_method(B, vc, t)[0] if vc else None
+        if not cls:
+            return set()
+        out.add(cls)
+    if n != len(re.findall(r'\b' + t + r'\s*\(', body)):
+        return set()  # a call this didn't resolve, or a bare t() (receiver is this, possibly a mod class)
+    return out
+
+
 def scan_files(files):
     res = {'BREAK': {}, 'RISK': {}, 'INFO': {}, 'BREAK_129': {}, 'RISK_129': {}}
 
@@ -420,6 +459,9 @@ def scan_files(files):
         for level, msg, rx in RAW_PATTERNS:
             for m in rx.finditer(p['raw']):
                 add(level, msg, rel + ':' + str(p['raw'].count('\n', 0, m.start()) + 1))
+        if CORE_DIR.search(rel):
+            for m in CORE_GATE.finditer(p['raw']):
+                add('RISK', CORE_GATE_MSG, rel + ':' + str(p['raw'].count('\n', 0, m.start()) + 1))
         spans = debug_spans(src30)
         for level, msg, rx in PATTERNS:
             for m in rx.finditer(src30):
@@ -592,7 +634,11 @@ def scan_files(files):
             if t in own29 or t in GLOBAL_NAMES:
                 continue
             if re.search(r'\b' + t + r'\s*\(', body29):
-                add('RISK_129', 'calls ' + NEW_METHODS[t] + ', which only exists from 1.30', rel)
+                on = call_classes(body29, t, modclasses)
+                if on:
+                    add('BREAK_129', 'calls ' + sorted(on)[0] + '.' + t + '(), which 1.29 does not have: does not compile on 1.29', rel)
+                else:
+                    add('RISK_129', 'calls ' + NEW_METHODS[t] + ', which only exists from 1.30', rel)
         for t in toks29 & NEW_CLASSES:
             if t not in own29 and t not in GLOBAL_CLASSES:
                 add('RISK_129', 'uses class ' + t + ', which only exists from 1.30', rel)
@@ -724,8 +770,60 @@ def skipped_folder(n, pbos, path, skipped):
     return 'RISK', SKIP_LOST_MSG, ''
 
 
+WORKBENCH_DIR = re.compile(r'(?:^|/)workbench/', re.I)
+MODULE_DIR = re.compile(r'(?:^|/)([1-5])_(?:core|gamelib|game|world|mission)/', re.I)
+VAR_DECL = re.compile(r'\b([A-Za-z_]\w*)(?:\s*<[^<>;{}]*>)?\s+([A-Za-z_]\w*)\s*(?=[=;,)\[])')
+NOT_TYPES = {'return', 'new', 'delete', 'class', 'extends', 'modded', 'typedef', 'case', 'else', 'out', 'inout',
+             'ref', 'autoptr', 'notnull', 'const', 'static', 'private', 'protected', 'override', 'proto', 'native',
+             'goto', 'throw', 'enum', 'sealed', 'event', 'external', 'volatile', 'reference'}
+NAME_CLASH_MSG = ("variable named like another mod's class: with both mods loaded the module does not compile "
+                  "(\"Variable name '...' already used as type name\")")
+NAME_CLASH_RISK = ("variable named like another mod's class: fails to compile with both loaded if that class is "
+                   "visible from this module (module of one of them unknown)")
+
+
+def module_rank(rel):
+    m = MODULE_DIR.search(rel)
+    return int(m.group(1)) if m else None
+
+
+TYPE_OWNERS = {}  # type name -> [(mod id, module rank)] for classes/enums/typedefs mods declare
+for _n, _fs in FILES.items():
+    for _rel, _src in _fs:
+        for _t in file_decls(_rel, _src)[0]:
+            TYPE_OWNERS.setdefault(_t, []).append((_n, module_rank(_rel)))
+
+
+def name_clashes(n):
+    """(level, location) for each variable this mod declares under a type name another scanned mod declares."""
+    mine = {t for t, owners in TYPE_OWNERS.items() if any(o == n for o, _ in owners)}
+    out = []
+    for rel, src in FILES[n]:
+        if WORKBENCH_DIR.search(rel):
+            continue  # Workbench editor plugins are not compiled by the game
+        file_decls(rel, src)
+        rank = module_rank(rel)
+        seen = set()
+        for m in VAR_DECL.finditer(TEXTS[rel]):
+            typ, var = m.group(1), m.group(2)
+            if typ in NOT_TYPES or var in seen or var in mine or var in B or var not in TYPE_OWNERS:
+                continue
+            others = [(o, r) for o, r in TYPE_OWNERS[var] if o != n]
+            known = [(o, r) for o, r in others if r is not None and rank is not None]
+            hit = [o for o, r in known if r <= rank]
+            where = rel + ' (' + var + ', a class in ' + manifest[(hit or [o for o, _ in others])[0]]['mod'] + ')'
+            if hit:
+                out.append(('BREAK', where))
+            elif len(known) < len(others):
+                out.append(('RISK', where))
+            else:
+                continue
+            seen.add(var)
+    return out
+
+
 report = {}
-_skips = [(n, pbo, mod_, path) for n in manifest for pbo, mod_, path in SCRIPT_PATHS.get(n, [])
+_skips =[(n, pbo, mod_, path) for n in manifest for pbo, mod_, path in SCRIPT_PATHS.get(n, [])
           if mod_ and mod_.lower().endswith('scriptmodule')]
 SKIPPED = {rel for n, _, _, path in _skips if owns_path(manifest[n]['pbos'], path)
            for rel, _ in folder_files(n, manifest[n]['pbos'], path)}
@@ -743,6 +841,8 @@ for n, info in manifest.items():
                 r['RISK'].setdefault(OTHER_PATH_MSG, []).append(where)
             else:
                 r['INFO'].setdefault(OTHER_PATH_INFO, []).append(where)
+    for level, where in name_clashes(n):
+        r[level].setdefault(NAME_CLASH_MSG if level == 'BREAK' else NAME_CLASH_RISK, []).append(where)
     r['unscanned_pbos'] = [k for k, p in info['pbos'].items() if p['unreadable']]
     r['packed_pbos'] = [k for k, p in info['pbos'].items() if p['compressed']]
     r['mod'] = info['mod']
