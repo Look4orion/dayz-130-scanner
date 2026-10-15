@@ -45,9 +45,6 @@ Each script file is read twice, as a 1.29 server and as a 1.30 server compile it
 - **Known patterns:** `#include "$profile..."`, `ChangeGameFocus` with no device argument (global input focus freezes
   menu input on 1.30; the per-device form vanilla uses is fine), `GetFluidCapacityScript`,
   `CreateInInventory` (not inside `OnDebugSpawn`, which only an admin's debug spawn runs), `Fill`.
-- **`modded class GameConstants`** (`RISK`): fails to compile on 1.30 Experimental 164014, even with
-  an empty body. Bohemia says it is resolved for 1.30 stable (DZEXP-93) and it is reported fixed on
-  the playtest build; check it compiles once stable ships.
 - **Silent breakers** (compile, but 1.30 vanilla never calls them): overrides of `OnCEUpdate`
   (1.30 calls `OnCEIterate`), the old `GetNoiseReduction`/`GetNoiseReductionByWeather`, and
   `AddExplosionEffectForSurface` registrations.

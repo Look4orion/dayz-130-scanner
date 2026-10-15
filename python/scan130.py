@@ -153,7 +153,6 @@ def obs_called(key, params):
 
 # Matched against the code a 1.30 server compiles (inactive #ifdef branches and comments removed).
 PATTERNS = [
-    ('RISK', 'modded class GameConstants: fails to compile on 1.30 Experimental 164014; reported fixed on the playtest build and Bohemia says resolved for 1.30 stable (DZEXP-93). Check it compiles once stable ships',re.compile(r'modded\s+class\s+GameConstants\b')),
     ('RISK', 'ChangeGameFocus with no device (global focus freezes input on 1.30 client)', re.compile(r'\bChangeGameFocus\s*\(\s*(?:[^,();]|\([^()]*\))*\)')),
     ('RISK', 'GetFluidCapacityScript returns int on 1.30', re.compile(r'\bGetFluidCapacityScript\b')),
     # Silent breakers: compile on 1.30, but vanilla no longer calls or reads them.

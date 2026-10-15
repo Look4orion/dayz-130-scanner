@@ -1,6 +1,6 @@
 // Port of python/scan130.py.
-import { re, search, finditer, findall, fullmatch, countChar, strip as pyStrip } from './pyre.js?v=202610151114';
-import { parse, strip, preprocess, nocomment, V129, V130 } from './enfparse.js?v=202610151114';
+import { re, search, finditer, findall, fullmatch, countChar, strip as pyStrip } from './pyre.js?v=202610151236';
+import { parse, strip, preprocess, nocomment, V129, V130 } from './enfparse.js?v=202610151236';
 
 const LEVELS = ['BREAK', 'RISK', 'INFO', 'BREAK_129', 'RISK_129'];
 
@@ -55,7 +55,6 @@ function names(ix) {
 
 // Matched against the code a 1.30 server compiles (inactive #ifdef branches and comments removed).
 const PATTERNS = [
-  ['RISK', 'modded class GameConstants: fails to compile on 1.30 Experimental 164014; reported fixed on the playtest build and Bohemia says resolved for 1.30 stable (DZEXP-93). Check it compiles once stable ships',re('modded\\s+class\\s+GameConstants\\b')],
   ['RISK', 'ChangeGameFocus with no device (global focus freezes input on 1.30 client)', re('\\bChangeGameFocus\\s*\\(\\s*(?:[^,();]|\\([^()]*\\))*\\)')],
   ['RISK', 'GetFluidCapacityScript returns int on 1.30', re('\\bGetFluidCapacityScript\\b')],
   // Silent breakers: compile on 1.30, but vanilla no longer calls or reads them.
