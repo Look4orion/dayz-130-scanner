@@ -6,8 +6,8 @@
 <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: https://rook1969.goatcounter.com; connect-src 'self'; worker-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'">
 <title>DayZ 1.30 Mod Scanner</title>
 <meta name="description" content="Check DayZ mods for known 1.30 breaking changes. Runs in your browser; your files are never uploaded.">
-<link rel="stylesheet" href="style.css?v=202610142344">
-<script type="module" src="js/app.js?v=202610142344"></script>
+<link rel="stylesheet" href="style.css?v=202610150646">
+<script type="module" src="js/app.js?v=202610150646"></script>
 </head>
 <body>
 <main>
@@ -36,11 +36,11 @@
     <h2>Reading the results</h2>
     <dl>
       <dt><span class="pill break">break</span> Breaks on 1.30</dt>
-      <dd>Code 1.30 will not compile or will silently skip: overrides of methods that were removed or changed, name clashes with methods vanilla added, script folders written with backslashes (1.30 loads none of their scripts, with no error), <code>#include "$profile..."</code>.</dd>
+      <dd>Code 1.30 will not compile or will silently skip: overrides of methods that were removed or changed, name clashes with methods vanilla added, script folders written with backslashes that other code needs (1.30 loads none of their scripts, with no error), <code>#include "$profile..."</code>.</dd>
       <dt><span class="pill risk">risk</span> Check by hand</dt>
-      <dd>Uses something 1.30 removed or changed, where the scanner can't tell for sure from the name alone: folder listings with <code>FindFile</code> (they return nothing for <code>$profile:</code> folders on 1.30, unless the call passes flags <code>-1</code>), menus taking global input focus with <code>ChangeGameFocus</code> (no device), backslash script paths into another mod's folder (often how a mod switches on optional support for it), methods 1.30 made protected, version gates like <code>#ifdef DAYZ_1_30</code> that switch off again on 1.31, <code>modded class GameConstants</code> (fails on 1.30 Experimental 164014, reported fixed for stable), overrides of obsolete methods 1.30 no longer calls (they compile but never run), calls to obsolete methods 1.30 left empty (they do nothing).</dd>
+      <dd>Uses something 1.30 removed or changed, where the scanner can't tell for sure from the name alone: folder listings with <code>FindFile</code> (they return nothing for <code>$profile:</code> folders on 1.30, unless the call passes flags <code>-1</code>), menus taking global input focus with <code>ChangeGameFocus</code> (no device), script folders written with backslashes whose code nothing else needs (it still compiles, but what they do is lost), backslash script paths into another mod's folder used for optional support (<code>#ifdef</code>), methods 1.30 made protected, version gates like <code>#ifdef DAYZ_1_30</code> that switch off again on 1.31, <code>modded class GameConstants</code> (fails on 1.30 Experimental 164014, reported fixed for stable), overrides of obsolete methods 1.30 no longer calls (they compile but never run), calls to obsolete methods 1.30 left empty (they do nothing).</dd>
       <dt><span class="pill info">info</span> Good to know</dt>
-      <dd>Still works, but behaves differently on 1.30: <code>CreateInInventory</code> refusing items that don't fit, <code>FindFile</code> calls already using the <code>-1</code> workaround, obsolete methods 1.30 still calls, car headlight overrides 1.30 no longer calls.</dd>
+      <dd>Still works, but behaves differently on 1.30: <code>CreateInInventory</code> refusing items that don't fit, <code>FindFile</code> calls already using the <code>-1</code> workaround, obsolete methods 1.30 still calls, overrides of obsolete methods whose replacement the mod also overrides, car headlight overrides 1.30 no longer calls, backslash script folders that are empty or hold only empty classes.</dd>
       <dt><span class="pill break">1.29</span> Won't compile on 1.29</dt>
       <dd>For builds that must still run on 1.29 servers: code that uses classes or methods that only exist from 1.30, outside a <code>#ifndef DAYZ_1_29</code> block.</dd>
     </dl>

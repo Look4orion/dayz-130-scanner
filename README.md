@@ -56,20 +56,31 @@ Each script file is read twice, as a 1.29 server and as a 1.30 server compile it
 - **Wrong version gates** (`RISK`): `#ifdef DAYZ_1_30` (off again on 1.31; use `#ifndef DAYZ_1_29`)
   and `BUILD_EXPERIMENTAL` (gone on 1.30 stable).
 - **Methods 1.30 made protected** (`RISK`), called from outside the class.
-- **CfgMods script paths with backslashes** (`BREAK`): 1.30 compiles none of that folder's scripts
-  and logs nothing. Only `*ScriptModule` entries count; image sets with backslashes still load.
+- **CfgMods script paths with backslashes**: 1.30 compiles none of that folder's scripts and logs
+  nothing. Only `*ScriptModule` entries count; image sets with backslashes still load. The grade
+  depends on what the skipped folder holds:
+  - `BREAK` when other loaded code (this mod or another scanned one) uses a class, enum or typedef
+    declared there, or a member a `modded class` there adds, through the class name
+    (`ParticleList.x`): the module fails to compile. The finding names the file and the name.
+  - `RISK` when the folder has code nothing else uses: it still compiles, but what it does is lost.
+  - `INFO` when the folder has no scripts, or only empty classes (`class X : Y {};`), whose objects
+    fall back to their config parent's script.
   A backslash path into *another* mod's folder (one not under any of this mod's PBO prefixes) is
-  `RISK` instead: mods list another mod's folder to pick up its `#define` for optional support, so
-  on 1.30 that support can compile out.
+  `RISK` when that PBO's scripts use `#ifdef`: mods list another mod's folder to pick up its
+  `#define` for optional support, so on 1.30 that support can compile out. Without `#ifdef` it is
+  `INFO`: the other mod loads its own scripts.
 - **Methods 1.30 marks `[Obsolete]`** (they still compile). An override is `RISK` when 1.30 vanilla
   no longer calls that method (with that argument count), because the override never runs. A call
   is `RISK` when 1.30 left the method as a placeholder (empty, or returning a constant) and the mod
   doesn't override it, because the call does nothing. Otherwise both are `INFO`. A call that could
-  equally be a current method of the same name in another class is `INFO` and names both, and a
-  call that only fits a current overload isn't reported. Overloads are told apart by argument
-  types where they're obvious: literals, and variables declared earlier in the same file. A vanilla
-  call that also fits a current overload counts as calling that one, and an override of an obsolete
-  overload is only `INFO` when the same class also overrides the current one.
+  equally be a current method of the same name in another class is `INFO` and names both, unless
+  the variable it's called on has a declared type: then it names the class the call reaches, or
+  isn't reported when that's the current one. A call that only fits a current overload isn't
+  reported. Overloads are told apart by argument types where they're obvious: literals, and
+  variables declared earlier in the same file. A vanilla call that also fits a current overload
+  counts as calling that one. An override of an obsolete method is `INFO` when the same class also
+  overrides the current overload, or the replacement the `[Obsolete]` message names
+  (`IsVitalTruckBattery` → `NeedElectricitySourceDevice`).
 
 **1.29** (`BREAK_129`, `RISK_129`), for builds that must still run on a 1.29 server:
 - `modded class` of, or `extends`, a class that only exists from 1.30.

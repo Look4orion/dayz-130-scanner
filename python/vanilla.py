@@ -2,10 +2,13 @@
 Usage: vanilla.py <1.29 scripts> <1.30 scripts> <out.json> [<1.29 build> <1.30 build>]"""
 import sys, os, json, glob, re
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from enfparse import parse, strip, call_args, call_types, norm_param, sig_fits
+from enfparse import parse, strip, nocomment, call_args, call_types, norm_param, sig_fits
 from deps import pbo_entries_all
 
 OBSOLETE = re.compile(r'\[\s*Obsolete[^\]]*\]\s*(?:\w+\s+)*?(\w+)\s*\(')
+# [Obsolete("1.30: use Transport.NeedElectricitySourceDevice")]: the methods the message points to.
+OBSOLETE_USE = re.compile(r'\[\s*Obsolete\s*\(\s*"([^"]*)"\s*\)\s*\]\s*(?:\w+\s+)*?(\w+)\s*\(')
+USE_NAME = re.compile(r'\buse\s+(?:\w+\s*\.\s*)*(\w+)', re.I)
 # A body that does nothing, or only returns a constant.
 STUB = re.compile(r'^\s*(?:return\s*(?:true|false|null|NULL|-?[\d.]+f?|""|vector\.Zero|string\.Empty)?\s*;\s*)?$')
 
@@ -51,8 +54,11 @@ def index(root):
     aliases = {}
     obsolete = set()
     defs = {}
+    uses = {}
     texts = []
     for _, src in sources(root):
+        for msg, name in OBSOLETE_USE.findall(nocomment(src)):
+            uses.setdefault(name, set()).update(USE_NAME.findall(msg))
         parsed = parse(src)
         s = strip(src)
         spans = {}
@@ -87,14 +93,14 @@ def index(root):
             if n in t:
                 calls[n] |= {c for c in call_types(t, n, skip_super=True, skip=spans.get(n, ()))
                              if not any(sig_fits(c, p, len(p)) for p in live[n])}
-    return cls, obsolete, defs, {n: sorted(list(c) for c in a) for n, a in calls.items()}
+    return cls, obsolete, defs, {n: sorted(list(c) for c in a) for n, a in calls.items()}, {n: sorted(u) for n, u in uses.items() if u}
 
 
 def main():
     out = {'versions': {'129': sys.argv[4] if len(sys.argv) > 5 else '1.29',
                         '130': sys.argv[5] if len(sys.argv) > 5 else '1.30'}}
     for tag, root in (('129', sys.argv[1]), ('130', sys.argv[2])):
-        ix, obsolete, defs, calls = index(root)
+        ix, obsolete, defs, calls, uses = index(root)
         out[tag] = {k: {'base': v['base'],
                         'methods': {m: [{'ret': s['ret'], 'params': list(s['params']), 'obsolete': s['obsolete'],
                                          'access': s['access']} for s in ss] for m, ss in v['methods'].items()},
@@ -103,6 +109,7 @@ def main():
             out['obsolete130'] = sorted(obsolete)
             out['obsoleteDefs130'] = defs
             out['obsoleteCalls130'] = calls
+            out['obsoleteUse130'] = uses
         print(tag, len(ix), 'classes', sum(len(v['methods']) for v in ix.values()), 'methods')
     with open(sys.argv[3], 'w') as f:
         json.dump(out, f, separators=(',', ':'))

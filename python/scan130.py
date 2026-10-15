@@ -125,6 +125,8 @@ OBSOLETE = set(V['obsolete130'])
 OBS_DEFS = V.get('obsoleteDefs130', {})  # "Class.method" -> [{n, req, stub, params}]
 # Argument types vanilla still calls each obsolete name with ('' = unknown), calls that fit a current overload left out.
 OBS_CALLS = {n: [tuple(c) for c in a] for n, a in V.get('obsoleteCalls130', {}).items()}
+# Methods an obsolete method's message says to use instead ("1.30: use Transport.NeedElectricitySourceDevice").
+OBS_USE = V.get('obsoleteUse130', {})
 # Parameter lists of current (not obsolete) methods sharing an obsolete name: a call that fits one may be one of them.
 LIVE_SIGS = {}
 LIVE_CLASS = {}  # first class (by name) with a current method of that name
@@ -194,7 +196,18 @@ MINUS_ONE = re.compile(r'-\s*1')
 FLAG_ARG = re.compile(r'(?:\w+\s*\.\s*)*(\w+)\s*(\(.*\))?', re.S)
 FUNC_HEAD = re.compile(r'\b(\w+)\s*\(([^;{}()]*)\)\s*\{')
 BLOCK_WORDS = {'if', 'while', 'for', 'foreach', 'switch', 'catch', 'return'}
-SCRIPT_PATH_MSG = 'CfgMods script path with backslashes: 1.30 compiles none of these scripts, silently'
+SCRIPT_PATH_MSG = ('CfgMods script path with backslashes: 1.30 compiles none of these scripts, silently, and other '
+                   'loaded code uses what they declare, so the module fails to compile')
+SKIP_LOST_MSG = ('CfgMods script path with backslashes: 1.30 compiles none of these scripts, silently, so what they do is '
+                 'lost (nothing else uses them, so it still compiles)')
+SKIP_EMPTY_MSG = 'CfgMods script path with backslashes points at a folder with no scripts: 1.30 skips it, and nothing is lost'
+SKIP_STUB_MSG = ("CfgMods script path with backslashes: 1.30 skips these scripts, but they are only empty classes, so those "
+                 "objects use their config parent's script and nothing is lost")
+OTHER_PATH_INFO = ("CfgMods script path with backslashes into another mod's folder: 1.30 skips the entry, but this PBO's "
+                   "scripts have no #ifdef, so they don't depend on that mod (it loads its own scripts)")
+TOP_DECL = re.compile(r'^\s*(?:enum\s+(\w+)|typedef\s+[\w<>, ]+?\s+(\w+)\s*;)', re.M)
+EMPTY_ONLY = re.compile(r'^(?:\s*class\s+\w+\s*(?::|extends)\s*\w+\s*\{\s*\}\s*;?)*\s*$')
+IFDEF = re.compile(r'^\s*#\s*ifn?def\b', re.M)
 OTHER_PATH_MSG = ("CfgMods script path with backslashes into another mod's folder: 1.30 skips the entry, so code that "
                   "needs that mod's scripts (often its #define for optional support) can compile out")
 
@@ -362,6 +375,22 @@ def vanilla_base(c, modclasses, ix):
     return b if b in ix else None
 
 
+def receivers(body, t, modclasses):
+    """{("Class.t", declared type)} for every x.t() call whose x has a declared type; empty if any call can't be resolved."""
+    out = set()
+    for m in re.finditer(r'(\.\s*)?\b(\w+)\s*\.\s*' + t + r'\s*\(', body):
+        if m.group(1):
+            return set()  # a.b.t(): receiver type unknown
+        typ = next((d.group(1) for d in re.finditer(r'\b(\w+)\s+' + m.group(2) + r'\s*[=;,)]', body)
+                    if d.group(1) not in ('return', 'new', 'delete', 'out', 'inout', 'ref', 'autoptr')), None)
+        vc = typ if typ in B else (vanilla_base(modclasses[typ], modclasses, B) if typ in modclasses else None)
+        cls, _ = find_method(B, vc, t) if vc else (None, None)
+        if not cls:
+            return set()
+        out.add((cls + '.' + t, typ))
+    return out
+
+
 def scan_files(files):
     res = {'BREAK': {}, 'RISK': {}, 'INFO': {}, 'BREAK_129': {}, 'RISK_129': {}}
 
@@ -460,9 +489,12 @@ def scan_files(files):
                         if mn not in OBS_NOTED and any(m.get('obsolete') for m in ms30 if sig(m) == s):
                             live30 = {sig(m) for m in ms30 if not m.get('obsolete')}
                             also = [sig(o) for o in ovs if o['override'] and sig(o) in live30]
+                            repl = [u for u in OBS_USE.get(mn, []) if u != mn and any(o['override'] for o in c['methods'].get(u, []))]
                             what = 'overrides ' + vc30 + '.' + mn + '(' + ', '.join(s) + '), marked [Obsolete] in 1.30'
                             if also:
                                 add('INFO', what + '; the same class also overrides the current (' + ', '.join(also[0]) + ') version, so nothing is lost', rel)
+                            elif repl:
+                                add('INFO', what + '; the same class also overrides ' + repl[0] + '(), its 1.30 replacement, so nothing is lost', rel)
                             elif obs_called(vc30 + '.' + mn, s):
                                 add('INFO', what, rel)
                             else:
@@ -495,6 +527,14 @@ def scan_files(files):
             ar = {c for c in calls if not any(sig_fits(c, p, len(p)) for p in LIVE_SIGS.get(t, []))}
             ds = [d for d in mine if any(obs_fits(d, c) for c in ar)]
             if not ar:
+                reach = receivers(body, t, modclasses)
+                if reach and all(k in OBS_DEFS for k, _ in reach):
+                    if not all(d['stub'] for k, _ in reach for d in OBS_DEFS[k]):
+                        k, typ = sorted(reach)[0]
+                        add('INFO', 'calls ' + k + '() on a ' + typ + ': [Obsolete] in 1.30 but still there, so it works (compile warning)', rel)
+                        continue
+                elif reach and not any(k in OBS_DEFS for k, _ in reach):
+                    continue  # every call reaches a current method
                 obs = sorted(k for k in OBS_DEFS if k.split('.')[1] == t)
                 add('INFO', 'calls ' + t + '(): ' + ', '.join(obs) + '() is [Obsolete] in 1.30 but ' + LIVE_CLASS[t] + '.' + t + '() is not; check which one this call reaches', rel)
             elif ds and all(d['stub'] for d in ds) and t not in mod_overrides:
@@ -607,16 +647,102 @@ if PATHS:
             n, kind, m = (x.strip() for x in line.rstrip('\n').split('\t'))
             SCRIPT_PATHS[n] = backslash_paths(os.path.join(PATHS[1], m))
 
+DECLS = {}  # rel -> (type names the file declares, {modded class: members it adds})
+TEXTS = {}
+
+
+def file_decls(rel, src):
+    if rel not in DECLS:
+        types, members = set(), {}
+        try:
+            cls = parse(src)
+        except Exception:
+            cls = []
+        for c in cls:
+            if not c['modded']:
+                types.add(c['name'])
+                continue
+            for mn, ovs in c['methods'].items():
+                if mn != c['name'] and not mn.startswith('~') and not any(o['override'] for o in ovs):
+                    members.setdefault(c['name'], set()).add(mn)
+            members.setdefault(c['name'], set()).update(c['fields'])
+        s = strip(src)
+        types.update(x for t in TOP_DECL.findall(s) for x in t if x)
+        DECLS[rel] = (types, members)
+        TEXTS[rel] = s
+    return DECLS[rel]
+
+
+def type_use(s, name):
+    """Whether s uses name where only a type can stand (a variable of that name doesn't count)."""
+    n = re.escape(name)
+    return bool(re.search(r'(?<![\w.])' + n + r'\s+[A-Za-z_]\w*\s*[;=,)(\[]'
+                          r'|\b(?:new|extends|ref|autoptr|class)\s+' + n + r'\b'
+                          r'|[:<,]\s*' + n + r'\s*[>,{]'
+                          r'|(?<![\w.])' + n + r'\s*\.\s*Cast(?:To)?\s*\(', s))
+
+
+def folder_files(n, pbos, path):
+    """The scanned scripts under a CfgMods script path."""
+    p = path.replace('\\', '/').strip('/').lower()
+    for pb, note in pbos.items():
+        pre = (note.get('prefix') or pb[:-4]).replace('\\', '/').strip('/').lower()
+        if pre and (p == pre or p.startswith(pre + '/')):
+            head = (n + '/' + pb + '/').lower()
+            sub = p[len(pre):].strip('/')
+            return [(rel, src) for rel, src in FILES[n] if rel.lower().startswith(head)
+                    and (not sub or rel[len(head):].lower().startswith(sub + '/'))]
+    return []
+
+
+def skipped_folder(n, pbos, path, skipped):
+    """Grade a script folder 1.30 skips: (level, message, detail)."""
+    fs = folder_files(n, pbos, path)
+    if not fs:
+        return 'INFO', SKIP_EMPTY_MSG, ''
+    mine = {rel for rel, _ in fs}
+    types, members = set(), {}
+    for rel, src in fs:
+        t, m = file_decls(rel, src)
+        types |= t
+        for k, v in m.items():
+            members.setdefault(k, set()).update(v)
+    others = [(rel, src) for fs2 in FILES.values() for rel, src in fs2 if rel not in mine and rel not in skipped]
+    for rel, src in others:
+        types -= file_decls(rel, src)[0]
+    types -= VANILLA_NAMES
+    # a member a modded class adds counts only when used through the class name (ParticleList.x)
+    uses = [re.compile(r'\b' + k + r'\s*\.\s*(' + '|'.join(sorted(v)) + r')\b') for k, v in members.items() if v]
+    for rel, src in others:
+        used = {t for t in types & set(IDENT.findall(TEXTS[rel])) if type_use(TEXTS[rel], t)}
+        if not used:
+            used = {m.group(1) for u in uses for m in [u.search(TEXTS[rel])] if m}
+        if used:
+            return 'BREAK', SCRIPT_PATH_MSG, ' (' + rel + ' uses ' + sorted(used)[0] + ')'
+    if all(EMPTY_ONLY.match(strip(src)) for _, src in fs):
+        return 'INFO', SKIP_STUB_MSG, ''
+    return 'RISK', SKIP_LOST_MSG, ''
+
+
 report = {}
+_skips = [(n, pbo, mod_, path) for n in manifest for pbo, mod_, path in SCRIPT_PATHS.get(n, [])
+          if mod_ and mod_.lower().endswith('scriptmodule')]
+SKIPPED = {rel for n, _, _, path in _skips if owns_path(manifest[n]['pbos'], path)
+           for rel, _ in folder_files(n, manifest[n]['pbos'], path)}
+VANILLA_NAMES = ALL130
 for n, info in manifest.items():
     files = FILES[n]
     r = scan_files(files) if files else {'BREAK': {}, 'RISK': {}, 'INFO': {}, 'BREAK_129': {}, 'RISK_129': {}}
     for pbo, mod_, path in SCRIPT_PATHS.get(n, []):
         if mod_ and mod_.lower().endswith('scriptmodule'):
+            where = pbo + ': ' + mod_ + ' = ' + path
             if owns_path(info['pbos'], path):
-                r['BREAK'].setdefault(SCRIPT_PATH_MSG, []).append(pbo + ': ' + mod_ + ' = ' + path)
+                level, msg, detail = skipped_folder(n, info['pbos'], path, SKIPPED)
+                r[level].setdefault(msg, []).append(where + detail)
+            elif any(rel.lower().startswith((n + '/' + pbo + '/').lower()) and IFDEF.search(src) for rel, src in files):
+                r['RISK'].setdefault(OTHER_PATH_MSG, []).append(where)
             else:
-                r['RISK'].setdefault(OTHER_PATH_MSG, []).append(pbo + ': ' + mod_ + ' = ' + path)
+                r['INFO'].setdefault(OTHER_PATH_INFO, []).append(where)
     r['unscanned_pbos'] = [k for k, p in info['pbos'].items() if p['unreadable']]
     r['packed_pbos'] = [k for k, p in info['pbos'].items() if p['compressed']]
     r['mod'] = info['mod']

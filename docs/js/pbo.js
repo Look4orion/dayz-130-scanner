@@ -1,5 +1,5 @@
 // reader: { size, read(offset, length) -> Promise<Uint8Array> }
-import { re, finditer, findall, decodeUtf8 } from './pyre.js?v=202610142344';
+import { re, finditer, findall, decodeUtf8 } from './pyre.js?v=202610150646';
 
 const VERS = 0x56657273; // 'Vers' header extension
 const CPRS = 0x43707273; // 'Cprs' packed entry

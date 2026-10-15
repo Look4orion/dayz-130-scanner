@@ -1,6 +1,6 @@
 // Port of python/scan130.py.
-import { re, search, finditer, findall, fullmatch, countChar, strip as pyStrip } from './pyre.js?v=202610142344';
-import { parse, strip, preprocess, nocomment, V129, V130 } from './enfparse.js?v=202610142344';
+import { re, search, finditer, findall, fullmatch, countChar, strip as pyStrip } from './pyre.js?v=202610150646';
+import { parse, strip, preprocess, nocomment, V129, V130 } from './enfparse.js?v=202610150646';
 
 const LEVELS = ['BREAK', 'RISK', 'INFO', 'BREAK_129', 'RISK_129'];
 
@@ -98,7 +98,26 @@ const MINUS_ONE = '-\\s*1';
 const FLAG_ARG = '(?:\\w+\\s*\\.\\s*)*(\\w+)\\s*(\\(.*\\))?';
 const FUNC_HEAD = re('\\b(\\w+)\\s*\\(([^;{}()]*)\\)\\s*\\{');
 const BLOCK_WORDS = new Set(['if', 'while', 'for', 'foreach', 'switch', 'catch', 'return']);
-const SCRIPT_PATH_MSG = 'CfgMods script path with backslashes: 1.30 compiles none of these scripts, silently';
+const SCRIPT_PATH_MSG = 'CfgMods script path with backslashes: 1.30 compiles none of these scripts, silently, and other ' +
+  'loaded code uses what they declare, so the module fails to compile';
+const SKIP_LOST_MSG = 'CfgMods script path with backslashes: 1.30 compiles none of these scripts, silently, so what they do is ' +
+  'lost (nothing else uses them, so it still compiles)';
+const SKIP_EMPTY_MSG = 'CfgMods script path with backslashes points at a folder with no scripts: 1.30 skips it, and nothing is lost';
+const SKIP_STUB_MSG = 'CfgMods script path with backslashes: 1.30 skips these scripts, but they are only empty classes, so those ' +
+  "objects use their config parent's script and nothing is lost";
+const OTHER_PATH_INFO = "CfgMods script path with backslashes into another mod's folder: 1.30 skips the entry, but this PBO's " +
+  "scripts have no #ifdef, so they don't depend on that mod (it loads its own scripts)";
+const TOP_DECL = re('^\\s*(?:enum\\s+(\\w+)|typedef\\s+[\\w<>, ]+?\\s+(\\w+)\\s*;)', 'M');
+const EMPTY_ONLY = '(?:\\s*class\\s+\\w+\\s*(?::|extends)\\s*\\w+\\s*\\{\\s*\\}\\s*;?)*\\s*';
+const IFDEF = re('^\\s*#\\s*ifn?def\\b', 'M');
+
+// Whether s uses name where only a type can stand (a variable of that name doesn't count).
+function typeUse(s, n) {
+  return search(re('(?<![\\w.])' + n + '\\s+[A-Za-z_]\\w*\\s*[;=,)(\\[]' +
+    '|\\b(?:new|extends|ref|autoptr|class)\\s+' + n + '\\b' +
+    '|[:<,]\\s*' + n + '\\s*[>,{]' +
+    '|(?<![\\w.])' + n + '\\s*\\.\\s*Cast(?:To)?\\s*\\('), s) !== null;
+}
 const OTHER_PATH_MSG = "CfgMods script path with backslashes into another mod's folder: 1.30 skips the entry, so code that " +
   "needs that mod's scripts (often its #define for optional support) can compile out";
 
@@ -383,6 +402,8 @@ export function makeScanner(vanilla) {
   const OBS_DEFS = vanilla.obsoleteDefs130 || {};
   // argument types vanilla still calls each obsolete name with ('' = unknown), calls that fit a current overload left out
   const OBS_CALLS = new Map(Object.entries(vanilla.obsoleteCalls130 || {}));
+  // methods an obsolete method's message says to use instead ("1.30: use Transport.NeedElectricitySourceDevice")
+  const OBS_USE = vanilla.obsoleteUse130 || {};
   const LIVE_SIGS = new Map();
   const LIVE_CLASS = new Map();
   for (const cn of [...B.keys()].sort()) {
@@ -438,6 +459,26 @@ export function makeScanner(vanilla) {
   }
 
   const anyOverride = (ovs) => ovs.some((o) => o.override);
+
+  // [["Class.t", declared type]] for every x.t() call whose x has a declared type; empty if any call can't be resolved.
+  function receivers(body, t, modclasses) {
+    const out = new Map();
+    for (const m of finditer(re('(\\.\\s*)?\\b(\\w+)\\s*\\.\\s*' + t + '\\s*\\('), body)) {
+      if (m[1] !== undefined) return [];
+      let typ = null;
+      for (const d of finditer(re('\\b(\\w+)\\s+' + m[2] + '\\s*[=;,)]'), body)) {
+        if (!['return', 'new', 'delete', 'out', 'inout', 'ref', 'autoptr'].includes(d[1])) {
+          typ = d[1];
+          break;
+        }
+      }
+      const vc = B.has(typ) ? typ : modclasses.has(typ) ? vanillaBase(modclasses.get(typ), modclasses, B) : null;
+      const cls = vc ? findMethod(B, vc, t)[0] : null;
+      if (!cls) return [];
+      out.set(cls + '.' + t + '\0' + typ, [cls + '.' + t, typ]);
+    }
+    return [...out.values()];
+  }
 
   function scanFiles(files, G) {
     const res = Object.fromEntries(LEVELS.map((l) => [l, {}]));
@@ -534,8 +575,10 @@ export function makeScanner(vanilla) {
               if (!OBS_NOTED.has(mn) && ms30.some((m) => m.obsolete && sig(m) === s)) {
                 const live30 = new Set(ms30.filter((m) => !m.obsolete).map(sig));
                 const also = ovs.filter((o) => o.override && live30.has(sig(o)));
+                const repl = (OBS_USE[mn] || []).filter((u) => u !== mn && (c.methods.get(u) || []).some((o) => o.override));
                 const what = 'overrides ' + vc30 + '.' + mn + '(' + ov.params.join(', ') + '), marked [Obsolete] in 1.30';
                 if (also.length) add('INFO', what + '; the same class also overrides the current (' + also[0].params.join(', ') + ') version, so nothing is lost', rel);
+                else if (repl.length) add('INFO', what + '; the same class also overrides ' + repl[0] + '(), its 1.30 replacement, so nothing is lost', rel);
                 else if (obsCalled(vc30 + '.' + mn, ov.params)) add('INFO', what, rel);
                 else add('RISK', what + ' and never called by 1.30 vanilla: the override does not run', rel);
               }
@@ -566,8 +609,14 @@ export function makeScanner(vanilla) {
           const ar = calls.filter((c) => !live.some((p) => sigFits(c, p, p.length)));
           const ds = mine.filter((d) => ar.some((c) => obsFits(d, c)));
           if (calls.length && !ar.length) {
-            const obs = Object.keys(OBS_DEFS).filter((k) => k.split('.')[1] === t).sort();
-            add('INFO', 'calls ' + t + '(): ' + obs.join(', ') + '() is [Obsolete] in 1.30 but ' + LIVE_CLASS.get(t) + '.' + t + '() is not; check which one this call reaches', rel);
+            const reach = receivers(body, t, modclasses);
+            if (reach.length && reach.every(([k]) => k in OBS_DEFS) && !reach.every(([k]) => OBS_DEFS[k].every((d) => d.stub))) {
+              const [k, typ] = reach.sort((x, y) => (x[0] + '\0' + x[1] < y[0] + '\0' + y[1] ? -1 : 1))[0];
+              add('INFO', 'calls ' + k + '() on a ' + typ + ': [Obsolete] in 1.30 but still there, so it works (compile warning)', rel);
+            } else if (!(reach.length && !reach.some(([k]) => k in OBS_DEFS))) {
+              const obs = Object.keys(OBS_DEFS).filter((k) => k.split('.')[1] === t).sort();
+              add('INFO', 'calls ' + t + '(): ' + obs.join(', ') + '() is [Obsolete] in 1.30 but ' + LIVE_CLASS.get(t) + '.' + t + '() is not; check which one this call reaches', rel);
+            }
           } else if (calls.length && ds.length && ds.every((d) => d.stub) && !modOverrides.has(t)) {
             add('RISK', 'calls ' + t + '(), which 1.30 left as a placeholder (empty, or returns a fixed value): it compiles but does nothing', rel);
           } else if (calls.length) add('INFO', 'calls ' + t + '() marked [Obsolete] in 1.30', rel);
@@ -660,15 +709,93 @@ export function makeScanner(vanilla) {
     for (const x of G.classes) G.names.add(x);
     for (const x of G.methods) G.names.add(x);
 
+    // Script folders 1.30 skips (backslash paths): graded by what they hold and whether other code needs it.
+    const decls = new Map(); // rel -> [type names, Map(modded class -> members it adds)]
+    const texts = new Map();
+    const fileDecls = (f) => {
+      if (!decls.has(f.rel)) {
+        const types = new Set();
+        const members = new Map();
+        let cls;
+        try {
+          cls = parse(f.text);
+        } catch {
+          cls = [];
+        }
+        for (const c of cls) {
+          if (!c.modded) {
+            types.add(c.name);
+            continue;
+          }
+          if (!members.has(c.name)) members.set(c.name, new Set());
+          for (const [mn, ovs] of c.methods) if (mn !== c.name && !mn.startsWith('~') && !anyOverride(ovs)) members.get(c.name).add(mn);
+          for (const f2 of c.fields) members.get(c.name).add(f2);
+        }
+        const s = strip(f.text);
+        for (const m of finditer(TOP_DECL, s)) types.add(m[1] !== undefined ? m[1] : m[2]);
+        decls.set(f.rel, [types, members]);
+        texts.set(f.rel, s);
+      }
+      return decls.get(f.rel);
+    };
+    const norm = (s) => s.replace(/\\/g, '/').replace(/^\/+|\/+$/g, '').toLowerCase();
+    const folderFiles = (m, path) => {
+      const p = norm(path);
+      for (const pb of m.pbos) {
+        const pre = norm(pb.prefix || pb.name.slice(0, -4));
+        if (pre && (p === pre || p.startsWith(pre + '/'))) {
+          const sub = p.slice(pre.length).replace(/^\/+|\/+$/g, '');
+          return m.files.filter((f) => f.pbo.toLowerCase() === pb.name.toLowerCase() && (!sub || norm(f.name).startsWith(sub + '/')));
+        }
+      }
+      return [];
+    };
+    const isScriptPath = (sp) => sp.module && sp.module.toLowerCase().endsWith('scriptmodule');
+    const skipped = new Set();
+    for (const m of mods) for (const sp of m.scriptPaths) if (isScriptPath(sp) && ownsPath(m.pbos, sp.path)) for (const f of folderFiles(m, sp.path)) skipped.add(f.rel);
+    const skippedFolder = (m, path) => {
+      const fs = folderFiles(m, path);
+      if (!fs.length) return ['INFO', SKIP_EMPTY_MSG, ''];
+      const mine = new Set(fs.map((f) => f.rel));
+      const types = new Set();
+      const members = new Map();
+      for (const f of fs) {
+        const [t, mm] = fileDecls(f);
+        for (const x of t) types.add(x);
+        for (const [k, v] of mm) {
+          if (!members.has(k)) members.set(k, new Set());
+          for (const x of v) members.get(k).add(x);
+        }
+      }
+      const others = mods.flatMap((m2) => m2.files).filter((f) => !mine.has(f.rel) && !skipped.has(f.rel));
+      for (const f of others) for (const x of fileDecls(f)[0]) types.delete(x);
+      for (const x of ALL130) types.delete(x);
+      // a member a modded class adds counts only when used through the class name (ParticleList.x)
+      const uses = [...members].filter(([, v]) => v.size).map(([k, v]) => re('\\b' + k + '\\s*\\.\\s*(' + [...v].sort().join('|') + ')\\b'));
+      for (const f of others) {
+        const s = texts.get(f.rel);
+        const toks = new Set(findall(IDENT, s));
+        let used = [...types].filter((t) => toks.has(t) && typeUse(s, t));
+        if (!used.length) used = uses.map((u) => search(u, s)).filter((x) => x).map((x) => x[1]);
+        if (used.length) return ['BREAK', SCRIPT_PATH_MSG, ' (' + f.rel + ' uses ' + used.sort()[0] + ')'];
+      }
+      if (fs.every((f) => fullmatch(EMPTY_ONLY, strip(f.text)))) return ['INFO', SKIP_STUB_MSG, ''];
+      return ['RISK', SKIP_LOST_MSG, ''];
+    };
+
     const report = {};
     mods.forEach((m, k) => {
       if (progress) progress(k, mods.length, m.mod);
       const r = m.files.length ? scanFiles(m.files, G) : Object.fromEntries(LEVELS.map((l) => [l, {}]));
       for (const sp of m.scriptPaths) {
-        if (sp.module && sp.module.toLowerCase().endsWith('scriptmodule')) {
-          const [level, msg] = ownsPath(m.pbos, sp.path) ? ['BREAK', SCRIPT_PATH_MSG] : ['RISK', OTHER_PATH_MSG];
+        if (isScriptPath(sp)) {
+          const where = sp.pbo + ': ' + sp.module + ' = ' + sp.path;
+          let level, msg, detail = '';
+          if (ownsPath(m.pbos, sp.path)) [level, msg, detail] = skippedFolder(m, sp.path);
+          else if (m.files.some((f) => f.pbo === sp.pbo && search(IFDEF, f.text))) [level, msg] = ['RISK', OTHER_PATH_MSG];
+          else [level, msg] = ['INFO', OTHER_PATH_INFO];
           if (!r[level][msg]) r[level][msg] = [];
-          r[level][msg].push(sp.pbo + ': ' + sp.module + ' = ' + sp.path);
+          r[level][msg].push(where + detail);
         }
       }
       r.unscanned_pbos = m.pbos.filter((p) => p.unreadable).map((p) => p.name);
