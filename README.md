@@ -141,7 +141,7 @@ declare; needs the vanilla config files unpacked).
 ## The vanilla index
 
 `docs/vanilla.json` holds the names and signatures of the vanilla classes, methods and fields (no
-code), built from DayZ 1.29.163709 and 1.30.164014. To rebuild it after a game update, point
+code), built from DayZ 1.29.163709 and 1.30.164078 (stable). To rebuild it after a game update, point
 `vanilla.py` at the `scripts.pbo` in each game version's `dta` folder (server or client):
 ```
 python -I python/vanilla.py <1.29 dta/scripts.pbo> <1.30 dta/scripts.pbo> docs/vanilla.json 1.29.xxxxxx 1.30.xxxxxx
