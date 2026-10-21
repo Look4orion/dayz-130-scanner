@@ -53,7 +53,9 @@ def names(ix):
 # Names defined anywhere in vanilla (classes, methods, fields): a usage of these is not "removed" / "new".
 ALL129, ALL130 = names(A), names(B)
 
-REMOVED_CLASSES = {c for c in A if c not in B}
+# Types 1.30 declares only under #ifdef WORKBENCH (vanilla.py leaves them out of '130'): their own check.
+WB_ONLY = set(V.get('workbench130', []))
+REMOVED_CLASSES = {c for c in A if c not in B and c not in WB_ONLY}
 NEW_CLASSES = {c for c in B if c not in A}
 # Methods and fields that exist nowhere in 1.29 vanilla: code using them does not compile on 1.29
 # (unless another mod defines the name, which the scan checks).
@@ -167,7 +169,6 @@ PATTERNS = [
 ]
 # Matched against the whole file (directives included).
 RAW_PATTERNS = [
-    ('BREAK', '#include "$profile:..." silently does nothing on 1.30 (DZEXP-85)', re.compile(r'#include\s+"\$profile', re.I)),
     ('RISK', '#ifdef DAYZ_1_30 switches the code off again on 1.31 (use #ifndef DAYZ_1_29)', re.compile(r'^\s*#\s*if(?:n?def)?\s+(?:defined\s*\(?\s*)?DAYZ_1_30\b', re.M)),
     ('RISK', 'BUILD_EXPERIMENTAL used as a version gate: it is gone on 1.30 stable', re.compile(r'^\s*#\s*if(?:n?def)?\s+(?:defined\s*\(?\s*)?BUILD_EXPERIMENTAL\b', re.M)),
 ]
@@ -211,6 +212,13 @@ CORE_DIR = re.compile(r'(^|/)1_core/', re.I)
 CORE_GATE = re.compile(r'^[ \t]*#[ \t]*ifn?def[ \t]+DAYZ_1_\d+\b', re.M)
 CORE_GATE_MSG = ('version gate (#ifdef/#ifndef DAYZ_1_xx) in a 1_Core script: the version defines are not set yet '
                  'when the Core module compiles (measured on 1.29), so it always takes the "not defined" branch')
+WB_MSG = ('uses a class 1.30 declares only for Workbench (#ifdef WORKBENCH): outside an #ifdef WORKBENCH block '
+          'the module does not compile ("Can\'t find variable")')
+WB_GAME = dict(V130, WORKBENCH=False)
+STRING = re.compile(r'"(?:[^"\\\n]|\\.)*"')
+CROSS_CALL = re.compile(r'\.\s*Cross\s*\(')
+CROSS_MSG = ('calls vector.Cross(), which 1.30.164078 added and 1.30.164200 removed again: the module does not '
+             'compile (write the cross product out)')
 OTHER_PATH_MSG = ("CfgMods script path with backslashes into another mod's folder: 1.30 skips the entry, so code that "
                   "needs that mod's scripts (often its #define for optional support) can compile out")
 
@@ -461,6 +469,18 @@ def scan_files(files):
         if CORE_DIR.search(rel):
             for m in CORE_GATE.finditer(p['raw']):
                 add('RISK', CORE_GATE_MSG, rel + ':' + str(p['raw'].count('\n', 0, m.start()) + 1))
+        if WB_ONLY & set(IDENT.findall(p['raw'])) and module_rank(rel) and not WORKBENCH_DIR.search(rel):
+            seen = set()
+            for i, line in enumerate(preprocess(nocomment(p['raw']), WB_GAME).split('\n')):
+                for t in IDENT.findall(STRING.sub('""', line)):
+                    if t in WB_ONLY and t not in seen and t not in modclasses and t not in mod_own:
+                        seen.add(t)
+                        add('BREAK', WB_MSG, rel + ':' + str(i + 1) + ' (' + t + ')')
+        if 'Cross' not in mod_own:
+            for m in CROSS_CALL.finditer(src30):
+                args = call_args(src30, m.end() - 1)
+                if args is not None and len([a for a in args if a.strip()]) == 1:
+                    add('BREAK', CROSS_MSG, rel + ':' + str(src30.count('\n', 0, m.start()) + 1))
         spans = debug_spans(src30)
         for level, msg, rx in PATTERNS:
             for m in rx.finditer(src30):

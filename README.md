@@ -42,9 +42,16 @@ Each script file is read twice, as a 1.29 server and as a 1.30 server compile it
   after a `-1` call in the same function is part of the workaround and isn't reported. `-1` lists
   nothing on 1.29, so a `-1` call with no retry, in a mod that never uses `FindFileFlags.ALL`, is a
   1.29 `RISK`.
-- **Known patterns:** `#include "$profile..."`, `ChangeGameFocus` with no device argument (global input focus freezes
+- **Known patterns:** `ChangeGameFocus` with no device argument (global input focus freezes
   menu input on 1.30; the per-device form vanilla uses is fine), `GetFluidCapacityScript`,
   `CreateInInventory` (not inside `OnDebugSpawn`, which only an admin's debug spawn runs), `Fill`.
+- **Workbench classes** (`BREAK`): since 1.30.164200, `Workbench` and the other Workbench API classes
+  (`WBModuleDef`, `ScriptEditor`, `WorkbenchPluginAttribute`, ...) are declared only under
+  `#ifdef WORKBENCH`. Using one in a game script (`1_Core` to `5_Mission`) outside an
+  `#ifdef WORKBENCH` block fails the module with "Can't find variable". Workbench plugin folders
+  are skipped.
+- **`vector.Cross()`** (`BREAK`): 1.30.164078 added it and 164200 removed it again, so `v.Cross(w)`
+  no longer compiles. Not reported when the mod declares its own `Cross`.
 - **Silent breakers** (compile, but 1.30 vanilla never calls them): overrides of `OnCEUpdate`
   (1.30 calls `OnCEIterate`), the old `GetNoiseReduction`/`GetNoiseReductionByWeather`, and
   `AddExplosionEffectForSurface` registrations.
@@ -138,7 +145,7 @@ declare; needs the vanilla config files unpacked).
 ## The vanilla index
 
 `docs/vanilla.json` holds the names and signatures of the vanilla classes, methods and fields (no
-code), built from DayZ 1.29.163709 and 1.30.164078 (stable). To rebuild it after a game update, point
+code), built from DayZ 1.29.163709 and 1.30.164200 (stable). To rebuild it after a game update, point
 `vanilla.py` at the `scripts.pbo` in each game version's `dta` folder (server or client):
 ```
 python -I python/vanilla.py <1.29 dta/scripts.pbo> <1.30 dta/scripts.pbo> docs/vanilla.json 1.29.xxxxxx 1.30.xxxxxx

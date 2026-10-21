@@ -6,8 +6,8 @@
 <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: https://rook1969.goatcounter.com; connect-src 'self'; worker-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'">
 <title>DayZ 1.30 Mod Scanner</title>
 <meta name="description" content="Check DayZ mods for known 1.30 breaking changes. Runs in your browser; your files are never uploaded.">
-<link rel="stylesheet" href="style.css?v=202610151236">
-<script type="module" src="js/app.js?v=202610151236"></script>
+<link rel="stylesheet" href="style.css?v=202610211251">
+<script type="module" src="js/app.js?v=202610211251"></script>
 </head>
 <body>
 <main>
@@ -36,7 +36,7 @@
     <h2>Reading the results</h2>
     <dl>
       <dt><span class="pill break">break</span> Breaks on 1.30</dt>
-      <dd>Code 1.30 will not compile or will silently skip: overrides of methods that were removed or changed, name clashes with methods vanilla added, script folders written with backslashes that other code needs (1.30 loads none of their scripts, with no error), <code>#include "$profile..."</code>, a variable named like a class from another scanned mod (with both loaded: "Variable name already used as type name").</dd>
+      <dd>Code 1.30 will not compile or will silently skip: overrides of methods that were removed or changed, name clashes with methods vanilla added, script folders written with backslashes that other code needs (1.30 loads none of their scripts, with no error), <code>Workbench</code> classes used outside <code>#ifdef WORKBENCH</code> (Workbench-only since 1.30.164200), <code>vector.Cross()</code> (removed again in 1.30.164200), a variable named like a class from another scanned mod (with both loaded: "Variable name already used as type name").</dd>
       <dt><span class="pill risk">risk</span> Check by hand</dt>
       <dd>Uses something 1.30 removed or changed, where the scanner can't tell for sure from the name alone: folder listings with <code>FindFile</code> (they return nothing for <code>$profile:</code> folders on 1.30, unless the call passes flags <code>-1</code>), menus taking global input focus with <code>ChangeGameFocus</code> (no device), script folders written with backslashes whose code nothing else needs (it still compiles, but what they do is lost), backslash script paths into another mod's folder used for optional support (<code>#ifdef</code>), methods 1.30 made protected, version gates like <code>#ifdef DAYZ_1_30</code> that switch off again on 1.31, version gates in <code>1_Core</code> scripts (the version defines aren't set there yet, so they always take the "not defined" branch), overrides of obsolete methods 1.30 no longer calls (they compile but never run), calls to obsolete methods 1.30 left empty (they do nothing).</dd>
       <dt><span class="pill info">info</span> Good to know</dt>
@@ -52,7 +52,7 @@
       <li>Code under a mod's own <code>#ifdef</code> is checked both ways, as if the define could be on or off.</li>
       <li>Mods that reference each other: drop them together, so names one mod defines count as known for the others.</li>
     </ul>
-    <p class="small">Compares against an index of vanilla class and method names built from the game's own scripts (DayZ 1.29.163709 and 1.30.164078 stable). The same scanner also runs from the command line: <a href="https://github.com/Look4orion/dayz-130-scanner">source and instructions</a>.</p>
+    <p class="small">Compares against an index of vanilla class and method names built from the game's own scripts (DayZ 1.29.163709 and 1.30.164200 stable). The same scanner also runs from the command line: <a href="https://github.com/Look4orion/dayz-130-scanner">source and instructions</a>.</p>
     <p class="small">Made by Rook: <a href="https://steamcommunity.com/id/rook1969/myworkshopfiles/" rel="noopener">my DayZ mods on the Workshop</a>.</p>
     <p><a href="https://ko-fi.com/rookmod" rel="noopener"><img src="kofi.png" alt="Support me on Ko-fi" width="178" height="36"></a></p>
   </section>

@@ -2,7 +2,7 @@
 Usage: vanilla.py <1.29 scripts> <1.30 scripts> <out.json> [<1.29 build> <1.30 build>]"""
 import sys, os, json, glob, re
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from enfparse import parse, strip, nocomment, call_args, call_types, norm_param, sig_fits
+from enfparse import parse, strip, nocomment, preprocess, call_args, call_types, norm_param, sig_fits
 from deps import pbo_entries_all
 
 OBSOLETE = re.compile(r'\[\s*Obsolete[^\]]*\]\s*(?:\w+\s+)*?(\w+)\s*\(')
@@ -56,10 +56,17 @@ def index(root):
     defs = {}
     uses = {}
     texts = []
+    game, wb = set(), set()  # types the game compiles; types declared only under #ifdef WORKBENCH
     for _, src in sources(root):
         for msg, name in OBSOLETE_USE.findall(nocomment(src)):
             uses.setdefault(name, set()).update(USE_NAME.findall(msg))
         parsed = parse(src)
+        declared = {c['name'] for c in parsed if not c['modded']}
+        if 'WORKBENCH' in src:
+            off = {c['name'] for c in parse(preprocess(src, {'WORKBENCH': False})) if not c['modded']}
+            wb |= declared - off
+            declared = off
+        game |= declared
         s = strip(src)
         spans = {}
         for name, params, req, stub, span in obsolete_defs(s):
@@ -93,14 +100,19 @@ def index(root):
             if n in t:
                 calls[n] |= {c for c in call_types(t, n, skip_super=True, skip=spans.get(n, ()))
                              if not any(sig_fits(c, p, len(p)) for p in live[n])}
-    return cls, obsolete, defs, {n: sorted(list(c) for c in a) for n, a in calls.items()}, {n: sorted(u) for n, u in uses.items() if u}
+    return (cls, obsolete, defs, {n: sorted(list(c) for c in a) for n, a in calls.items()}, {n: sorted(u) for n, u in uses.items() if u},
+            sorted(wb - game))
 
 
 def main():
     out = {'versions': {'129': sys.argv[4] if len(sys.argv) > 5 else '1.29',
                         '130': sys.argv[5] if len(sys.argv) > 5 else '1.30'}}
     for tag, root in (('129', sys.argv[1]), ('130', sys.argv[2])):
-        ix, obsolete, defs, calls, uses = index(root)
+        ix, obsolete, defs, calls, uses, wb = index(root)
+        if tag == '130':
+            # Workbench-only types (1.30.164200: class Workbench): game scripts can't use them
+            out['workbench130'] = wb
+            ix = {k: v for k, v in ix.items() if k not in wb}
         out[tag] = {k: {'base': v['base'],
                         'methods': {m: [{'ret': s['ret'], 'params': list(s['params']), 'obsolete': s['obsolete'],
                                          'access': s['access']} for s in ss] for m, ss in v['methods'].items()},

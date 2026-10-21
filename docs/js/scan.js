@@ -1,6 +1,6 @@
 // Port of python/scan130.py.
-import { re, search, finditer, findall, fullmatch, countChar, strip as pyStrip } from './pyre.js?v=202610151236';
-import { parse, strip, preprocess, nocomment, V129, V130 } from './enfparse.js?v=202610151236';
+import { re, search, finditer, findall, fullmatch, countChar, strip as pyStrip } from './pyre.js?v=202610211251';
+import { parse, strip, preprocess, nocomment, V129, V130 } from './enfparse.js?v=202610211251';
 
 const LEVELS = ['BREAK', 'RISK', 'INFO', 'BREAK_129', 'RISK_129'];
 
@@ -69,7 +69,6 @@ const PATTERNS = [
 ];
 // Matched against the whole file (directives included).
 const RAW_PATTERNS = [
-  ['BREAK', '#include "$profile:..." silently does nothing on 1.30 (DZEXP-85)', re('#include\\s+"\\$profile', 'I')],
   ['RISK', '#ifdef DAYZ_1_30 switches the code off again on 1.31 (use #ifndef DAYZ_1_29)', re('^\\s*#\\s*if(?:n?def)?\\s+(?:defined\\s*\\(?\\s*)?DAYZ_1_30\\b', 'M')],
   ['RISK', 'BUILD_EXPERIMENTAL used as a version gate: it is gone on 1.30 stable', re('^\\s*#\\s*if(?:n?def)?\\s+(?:defined\\s*\\(?\\s*)?BUILD_EXPERIMENTAL\\b', 'M')],
 ];
@@ -113,6 +112,13 @@ const CORE_DIR = re('(^|/)1_core/', 'I');
 const CORE_GATE = re('^[ \\t]*#[ \\t]*ifn?def[ \\t]+DAYZ_1_\\d+\\b', 'M');
 const CORE_GATE_MSG = 'version gate (#ifdef/#ifndef DAYZ_1_xx) in a 1_Core script: the version defines are not set yet ' +
   'when the Core module compiles (measured on 1.29), so it always takes the "not defined" branch';
+const WB_MSG = 'uses a class 1.30 declares only for Workbench (#ifdef WORKBENCH): outside an #ifdef WORKBENCH block ' +
+  'the module does not compile ("Can\'t find variable")';
+const WB_GAME = { ...V130, WORKBENCH: false };
+const STRING = re('"(?:[^"\\\\\\n]|\\\\.)*"');
+const CROSS_CALL = re('\\.\\s*Cross\\s*\\(');
+const CROSS_MSG = 'calls vector.Cross(), which 1.30.164078 added and 1.30.164200 removed again: the module does not ' +
+  'compile (write the cross product out)';
 const WORKBENCH_DIR = re('(?:^|/)workbench/', 'I');
 const MODULE_DIR = re('(?:^|/)([1-5])_(?:core|gamelib|game|world|mission)/', 'I');
 const VAR_DECL = re('\\b([A-Za-z_]\\w*)(?:\\s*<[^<>;{}]*>)?\\s+([A-Za-z_]\\w*)\\s*(?=[=;,)\\[])');
@@ -358,7 +364,9 @@ export function makeScanner(vanilla) {
   const ALL130 = names(B);
   const ALL129 = names(A);
 
-  const REMOVED_CLASSES = new Set([...A.keys()].filter((c) => !B.has(c)));
+  // types 1.30 declares only under #ifdef WORKBENCH (left out of '130'): their own check
+  const WB_ONLY = new Set(vanilla.workbench130 || []);
+  const REMOVED_CLASSES = new Set([...A.keys()].filter((c) => !B.has(c) && !WB_ONLY.has(c)));
   const NEW_CLASSES = new Set([...B.keys()].filter((c) => !A.has(c)));
   const NEW_METHODS = new Map();
   for (const [cn, c] of B) for (const m of c.methods.keys()) if (!ALL129.has(m) && !NEW_METHODS.has(m)) NEW_METHODS.set(m, cn + '.' + m + '()');
@@ -567,6 +575,23 @@ export function makeScanner(vanilla) {
       const [src29, cls29] = p.load['129'];
       for (const [level, msg, rx] of RAW_PATTERNS) for (const m of finditer(rx, p.load.raw)) add(level, msg, rel + ':' + (countChar(p.load.raw, '\n', 0, m.index) + 1));
       if (search(CORE_DIR, rel)) for (const m of finditer(CORE_GATE, p.load.raw)) add('RISK', CORE_GATE_MSG, rel + ':' + (countChar(p.load.raw, '\n', 0, m.index) + 1));
+      if (findall(IDENT, p.load.raw).some((t) => WB_ONLY.has(t)) && moduleRank(rel) && !search(WORKBENCH_DIR, rel)) {
+        const seen = new Set();
+        preprocess(nocomment(p.load.raw), WB_GAME).split('\n').forEach((line, i) => {
+          for (const t of findall(IDENT, line.replace(STRING, '""'))) {
+            if (WB_ONLY.has(t) && !seen.has(t) && !modclasses.has(t) && !modOwn.has(t)) {
+              seen.add(t);
+              add('BREAK', WB_MSG, rel + ':' + (i + 1) + ' (' + t + ')');
+            }
+          }
+        });
+      }
+      if (!modOwn.has('Cross')) {
+        for (const m of finditer(CROSS_CALL, src30)) {
+          const args = callArgs(src30, m.index + m[0].length - 1);
+          if (args !== null && args.filter((a) => pyStrip(a)).length === 1) add('BREAK', CROSS_MSG, rel + ':' + (countChar(src30, '\n', 0, m.index) + 1));
+        }
+      }
       const spans = debugSpans(src30);
       for (const [level, msg, rx] of PATTERNS) {
         for (const m of finditer(rx, src30)) {
