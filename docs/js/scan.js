@@ -1,6 +1,6 @@
 // Port of python/scan130.py.
-import { re, search, finditer, findall, fullmatch, countChar, strip as pyStrip } from './pyre.js?v=202610211251';
-import { parse, strip, preprocess, nocomment, V129, V130 } from './enfparse.js?v=202610211251';
+import { re, search, finditer, findall, fullmatch, countChar, strip as pyStrip } from './pyre.js?v=202610211304';
+import { parse, strip, preprocess, nocomment, V129, V130 } from './enfparse.js?v=202610211304';
 
 const LEVELS = ['BREAK', 'RISK', 'INFO', 'BREAK_129', 'RISK_129'];
 
@@ -84,14 +84,11 @@ const IDENT = re('\\b[A-Za-z_]\\w*\\b');
 // Only an admin's debug spawn runs these, and the parts go to attachment slots.
 const SKIP_IN_DEBUG_SPAWN = new Set(['CreateInInventory now refuses items that do not fit (no log line)']);
 const DEBUG_SPAWN = re('\\bOnDebugSpawn\\s*\\([^)]*\\)\\s*\\{');
-// FindFile calls are checked one at a time: flags -1 is the DZEXP-134 workaround.
-const FF_PROFILE_MSG = 'FindFile on $profile/$mission/$saves lists the game folder on 1.30 (DZEXP-134)';
-const FF_MSG = 'FindFile used (folder listing broken for prefixed/absolute paths on 1.30)';
-const FF_FIXED_MSG = 'FindFile passes flags -1, the DZEXP-134 workaround: lists $profile:/$mission: on 1.30';
+// FindFile lists $profile:/$mission: with any flags on 1.30.164200 (DZEXP-134 fixed); flags -1, the
+// 164078 workaround, lists nothing on 1.29.
 const FF_129_MSG = 'FindFile with flags -1 lists nothing on 1.29, and the call has no retry ' +
   '(retry with FindFileFlags.ALL when -1 finds nothing, or gate with #ifdef DAYZ_1_29)';
 const FF_CALL = re('\\bFindFile\\s*\\(');
-const FF_PREFIXED = re('\\$(profile|mission|saves)', 'I');
 const MINUS_ONE = '-\\s*1';
 const FLAG_ARG = '(?:\\w+\\s*\\.\\s*)*(\\w+)\\s*(\\(.*\\))?';
 const FUNC_HEAD = re('\\b(\\w+)\\s*\\(([^;{}()]*)\\)\\s*\\{');
@@ -305,21 +302,19 @@ function flagsMinusOne(a, modsrc, src, heads, pos, memo) {
   return memo.get(key);
 }
 
-// [offset, prefixed path, flags -1] for each FindFile call in src.
+// [offset, flags -1] for each FindFile call in src.
 function findfileHits(src, modsrc, memo) {
   const out = [];
   let heads = null;
   for (const m of finditer(FF_CALL, src)) {
     const open = m.index + m[0].length - 1;
     const args = callArgs(src, open);
-    const end = src.indexOf(';', open + 1);
-    const prefixed = !!search(FF_PREFIXED, src.slice(open + 1, end >= 0 ? end : src.length));
     let fixed = false;
     if (args && args.length >= 4) {
       if (heads === null) heads = [...finditer(FUNC_HEAD, src)];
       fixed = flagsMinusOne(pyStrip(args[3]), modsrc, src, heads, m.index, memo);
     }
-    out.push([m.index, prefixed, fixed]);
+    out.push([m.index, fixed]);
   }
   return out;
 }
@@ -337,14 +332,9 @@ function sameBlock(src, a, b) {
   return true;
 }
 
-// An unfixed call after a -1 call in the same function: the retry of the version-proof fix.
-function isFallback(src, hits, k) {
-  return hits.slice(0, k).some(([at, , fixed]) => fixed && at < hits[k][0] && sameBlock(src, at, hits[k][0]));
-}
-
 // A -1 call followed by another call in the same function (1.29 gets its answer there).
 function hasRetry(src, hits, k) {
-  return hits.slice(k + 1).some(([at, , fixed]) => !fixed && sameBlock(src, hits[k][0], at));
+  return hits.slice(k + 1).some(([at, fixed]) => !fixed && sameBlock(src, hits[k][0], at));
 }
 
 function ownsPath(pbos, path) {
@@ -550,10 +540,8 @@ export function makeScanner(vanilla) {
     };
     const parsed = files.map((f) => ({ rel: f.rel, load: load(f.text) }));
     const modclasses = ownClasses(parsed);
-    const mod30 = parsed.map((p) => p.load['130'][0]).join('\n');
     const mod29 = parsed.map((p) => p.load['129'][0]).join('\n');
     const all29 = mod29.includes('FindFileFlags.ALL');
-    const memo30 = new Map();
     const memo29 = new Map();
     // methods and fields the mod declares in any of its files (overrides excluded)
     const modOwn = new Set();
@@ -599,20 +587,9 @@ export function makeScanner(vanilla) {
           add(level, msg, rel + ':' + (countChar(src30, '\n', 0, m.index) + 1));
         }
       }
-      const hits = findfileHits(src30, mod30, memo30);
-      for (const [k, [at, prefixed, fixed]] of hits.entries()) {
-        const where = rel + ':' + (countChar(src30, '\n', 0, at) + 1);
-        if (fixed) {
-          add('INFO', FF_FIXED_MSG, where);
-          continue;
-        }
-        if (isFallback(src30, hits, k)) continue;
-        if (prefixed) add('RISK', FF_PROFILE_MSG, where);
-        add('RISK', FF_MSG, where);
-      }
       if (!all29) {
         const hits29 = findfileHits(src29, mod29, memo29);
-        for (const [k, [at, , fixed]] of hits29.entries()) {
+        for (const [k, [at, fixed]] of hits29.entries()) {
           if (fixed && !hasRetry(src29, hits29, k)) add('RISK_129', FF_129_MSG, rel + ':' + (countChar(src29, '\n', 0, at) + 1));
         }
       }
