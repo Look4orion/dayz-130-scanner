@@ -132,7 +132,7 @@ function run(groups) {
     } else if (d.type === 'done') {
       drop.classList.remove('busy');
       const n = groups.length;
-      status.textContent = `Scanned ${n} mod${n === 1 ? '' : 's'} against DayZ ${d.versions['129'] || '1.29'} and ${d.versions['130'] || '1.30'}.`;
+      status.textContent = `Scanned ${n} mod${n === 1 ? '' : 's'} against DayZ ${d.versions.previous} and ${d.versions.stable}.`;
       lastReport = { groups, report: d.report, errors: d.errors };
       render(lastReport);
       tally({ p: 'scan', t: 'Scan', e: 'true' });

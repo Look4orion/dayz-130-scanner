@@ -121,7 +121,7 @@ def main():
 
     # scripts
     V = json.load(open(vjson))
-    vscript = {c.lower() for c in V['129']} | {c.lower() for c in V['130']}
+    vscript = {c.lower() for r in ('previous', 'stable', 'exp') for c in V.get(r, {})}
     scr_def, scr_hard, scr_opt, scr_files = {}, {}, {}, {}
     for n, kind, m in mods:
         defs, hard, opt = set(), set(), set()

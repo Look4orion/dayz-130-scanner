@@ -349,13 +349,13 @@ function ownsPath(pbos, path) {
 export const CHECK_COUNTS = { patterns: PATTERNS.length + RAW_PATTERNS.length };
 
 export function makeScanner(vanilla) {
-  const A = toIndex(vanilla['129']);
-  const B = toIndex(vanilla['130']);
+  const A = toIndex(vanilla.previous);
+  const B = toIndex(vanilla.stable);
   const ALL130 = names(B);
   const ALL129 = names(A);
 
   // types 1.30 declares only under #ifdef WORKBENCH (left out of '130'): their own check
-  const WB_ONLY = new Set(vanilla.workbench130 || []);
+  const WB_ONLY = new Set((vanilla.workbench || {}).stable || []);
   const REMOVED_CLASSES = new Set([...A.keys()].filter((c) => !B.has(c) && !WB_ONLY.has(c)));
   const NEW_CLASSES = new Set([...B.keys()].filter((c) => !A.has(c)));
   const NEW_METHODS = new Map();
@@ -413,12 +413,12 @@ export function makeScanner(vanilla) {
       if (s30 && s30.length && !PUBLIC130.has(m) && ss.some(isPublic) && !NOW_PROTECTED.has(m)) NOW_PROTECTED.set(m, cn + '.' + m + '()');
     }
   }
-  const OBSOLETE = new Set(vanilla.obsolete130);
-  const OBS_DEFS = vanilla.obsoleteDefs130 || {};
+  const OBSOLETE = new Set(vanilla.obsolete.stable);
+  const OBS_DEFS = (vanilla.obsoleteDefs || {}).stable || {};
   // argument types vanilla still calls each obsolete name with ('' = unknown), calls that fit a current overload left out
-  const OBS_CALLS = new Map(Object.entries(vanilla.obsoleteCalls130 || {}));
+  const OBS_CALLS = new Map(Object.entries((vanilla.obsoleteCalls || {}).stable || {}));
   // methods an obsolete method's message says to use instead ("1.30: use Transport.NeedElectricitySourceDevice")
-  const OBS_USE = vanilla.obsoleteUse130 || {};
+  const OBS_USE = (vanilla.obsoleteUse || {}).stable || {};
   const LIVE_SIGS = new Map();
   const LIVE_CLASS = new Map();
   for (const cn of [...B.keys()].sort()) {

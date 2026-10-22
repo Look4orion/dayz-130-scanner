@@ -1,5 +1,9 @@
-"""Build vanilla.json from each version's dta/scripts.pbo (or an unpacked scripts folder).
-Usage: vanilla.py <1.29 scripts> <1.30 scripts> <out.json> [<1.29 build> <1.30 build>]"""
+"""vanilla.json: the vanilla scripts of each build the scanner compares, by role (previous, stable, exp).
+A build's scripts are its dta/scripts.pbo or an unpacked scripts folder.
+Usage: vanilla.py set <vanilla.json> <previous|stable|exp> <scripts> <version>
+       vanilla.py rotate <vanilla.json> <new stable scripts> <version>   (stable -> previous, exp cleared)
+       vanilla.py clear-exp <vanilla.json>
+       vanilla.py convert <old 129/130 vanilla.json> <out.json>"""
 import sys, os, json, glob, re
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from enfparse import parse, strip, nocomment, preprocess, call_args, call_types, norm_param, sig_fits
@@ -104,27 +108,84 @@ def index(root):
             sorted(wb - game))
 
 
+ROLES = ('previous', 'stable', 'exp')
+EXTRAS = ('workbench', 'obsolete', 'obsoleteDefs', 'obsoleteCalls', 'obsoleteUse')
+
+
+def ver(s):
+    """'1.30.164200' -> (1, 30, 164200)"""
+    return tuple(int(x) for x in re.findall(r'\d+', s)[:3])
+
+
+def build(root):
+    """(class index, {extra: data}) for one build's scripts."""
+    ix, obsolete, defs, calls, uses, wb = index(root)
+    # Workbench-only types (1.30.164200: class Workbench): game scripts can't use them
+    ix = {k: v for k, v in ix.items() if k not in wb}
+    data = {k: {'base': v['base'],
+                'methods': {m: [{'ret': s['ret'], 'params': list(s['params']), 'obsolete': s['obsolete'],
+                                 'access': s['access']} for s in ss] for m, ss in v['methods'].items()},
+                'fields': sorted(v['fields'])} for k, v in ix.items()}
+    print(len(ix), 'classes', sum(len(v['methods']) for v in ix.values()), 'methods')
+    return data, {'workbench': wb, 'obsolete': sorted(obsolete), 'obsoleteDefs': defs, 'obsoleteCalls': calls, 'obsoleteUse': uses}
+
+
+def put(v, role, data, extras, version):
+    v[role] = data
+    v['versions'][role] = version
+    for k in EXTRAS:
+        v.setdefault(k, {})
+        if k in extras:
+            v[k][role] = extras[k]
+        else:
+            v[k].pop(role, None)
+
+
+def drop(v, role):
+    v.pop(role, None)
+    v['versions'].pop(role, None)
+    for k in EXTRAS:
+        v.get(k, {}).pop(role, None)
+
+
+def save(v, path):
+    order = ['versions'] + [r for r in ROLES if r in v] + [k for k in EXTRAS if k in v]
+    with open(path, 'w') as f:
+        json.dump({k: v[k] for k in order}, f, separators=(',', ':'))
+
+
 def main():
-    out = {'versions': {'129': sys.argv[4] if len(sys.argv) > 5 else '1.29',
-                        '130': sys.argv[5] if len(sys.argv) > 5 else '1.30'}}
-    for tag, root in (('129', sys.argv[1]), ('130', sys.argv[2])):
-        ix, obsolete, defs, calls, uses, wb = index(root)
-        if tag == '130':
-            # Workbench-only types (1.30.164200: class Workbench): game scripts can't use them
-            out['workbench130'] = wb
-            ix = {k: v for k, v in ix.items() if k not in wb}
-        out[tag] = {k: {'base': v['base'],
-                        'methods': {m: [{'ret': s['ret'], 'params': list(s['params']), 'obsolete': s['obsolete'],
-                                         'access': s['access']} for s in ss] for m, ss in v['methods'].items()},
-                        'fields': sorted(v['fields'])} for k, v in ix.items()}
-        if tag == '130':
-            out['obsolete130'] = sorted(obsolete)
-            out['obsoleteDefs130'] = defs
-            out['obsoleteCalls130'] = calls
-            out['obsoleteUse130'] = uses
-        print(tag, len(ix), 'classes', sum(len(v['methods']) for v in ix.values()), 'methods')
-    with open(sys.argv[3], 'w') as f:
-        json.dump(out, f, separators=(',', ':'))
+    cmd, args = (sys.argv[1], sys.argv[2:]) if len(sys.argv) > 1 else ('', [])
+    if cmd == 'convert':
+        old = json.load(open(args[0]))
+        v = {'versions': {}}
+        put(v, 'previous', old['129'], {}, old['versions']['129'])
+        put(v, 'stable', old['130'], {k: old[k + '130'] for k in EXTRAS if k + '130' in old}, old['versions']['130'])
+        save(v, args[1])
+    elif cmd == 'set':
+        path, role, root, version = args
+        if role not in ROLES:
+            sys.exit('role must be one of ' + ', '.join(ROLES))
+        v = json.load(open(path))
+        if role == 'exp' and ver(version) <= ver(v['versions']['stable']):
+            sys.exit('exp %s is not newer than stable %s' % (version, v['versions']['stable']))
+        data, extras = build(root)
+        put(v, role, data, extras, version)
+        save(v, path)
+    elif cmd == 'rotate':
+        path, root, version = args
+        v = json.load(open(path))
+        data, extras = build(root)
+        put(v, 'previous', v['stable'], {k: v[k]['stable'] for k in EXTRAS if 'stable' in v.get(k, {})}, v['versions']['stable'])
+        put(v, 'stable', data, extras, version)
+        drop(v, 'exp')
+        save(v, path)
+    elif cmd == 'clear-exp':
+        v = json.load(open(args[0]))
+        drop(v, 'exp')
+        save(v, args[0])
+    else:
+        sys.exit(__doc__)
 
 
 if __name__ == '__main__':

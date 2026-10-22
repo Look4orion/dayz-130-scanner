@@ -7,7 +7,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 from enfparse import parse, strip, preprocess, nocomment, call_args, call_types, sig_fits, V129, V130
 
 V = json.load(open(sys.argv[1]))
-A, B = V['129'], V['130']
+A, B = V['previous'], V['stable']
 if sys.argv[2] == '--pbo':
     SRC, OUT = None, sys.argv[5]
     PATHS = sys.argv[3:5]
@@ -53,8 +53,8 @@ def names(ix):
 # Names defined anywhere in vanilla (classes, methods, fields): a usage of these is not "removed" / "new".
 ALL129, ALL130 = names(A), names(B)
 
-# Types 1.30 declares only under #ifdef WORKBENCH (vanilla.py leaves them out of '130'): their own check.
-WB_ONLY = set(V.get('workbench130', []))
+# Types 1.30 declares only under #ifdef WORKBENCH (vanilla.py leaves them out of the stable index): their own check.
+WB_ONLY = set(V.get('workbench', {}).get('stable', []))
 REMOVED_CLASSES = {c for c in A if c not in B and c not in WB_ONLY}
 NEW_CLASSES = {c for c in B if c not in A}
 # Methods and fields that exist nowhere in 1.29 vanilla: code using them does not compile on 1.29
@@ -123,12 +123,12 @@ for cn, c in A.items():
             NOW_PROTECTED.setdefault(m, cn + '.' + m + '()')
 
 # [Obsolete] methods in 1.30 (vanilla.py collects them)
-OBSOLETE = set(V['obsolete130'])
-OBS_DEFS = V.get('obsoleteDefs130', {})  # "Class.method" -> [{n, req, stub, params}]
+OBSOLETE = set(V['obsolete']['stable'])
+OBS_DEFS = V.get('obsoleteDefs', {}).get('stable', {})  # "Class.method" -> [{n, req, stub, params}]
 # Argument types vanilla still calls each obsolete name with ('' = unknown), calls that fit a current overload left out.
-OBS_CALLS = {n: [tuple(c) for c in a] for n, a in V.get('obsoleteCalls130', {}).items()}
+OBS_CALLS = {n: [tuple(c) for c in a] for n, a in V.get('obsoleteCalls', {}).get('stable', {}).items()}
 # Methods an obsolete method's message says to use instead ("1.30: use Transport.NeedElectricitySourceDevice").
-OBS_USE = V.get('obsoleteUse130', {})
+OBS_USE = V.get('obsoleteUse', {}).get('stable', {})
 # Parameter lists of current (not obsolete) methods sharing an obsolete name: a call that fits one may be one of them.
 LIVE_SIGS = {}
 LIVE_CLASS = {}  # first class (by name) with a current method of that name
