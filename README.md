@@ -1,6 +1,8 @@
-# DayZ 1.30 Mod Scanner
+# DayZ Mod Scanner
 
-Checks DayZ mods for the known 1.30 breaking changes, and whether the same build still compiles
+Checks DayZ mods for known breaking changes on the current stable version (1.30). It's kept up
+to date: when Bohemia opens a new experimental version, the scanner adds its changes, so modders
+can see what will break before it reaches stable. It also checks whether a build still compiles
 on 1.29. It reads the mod's scripts and compares them with an index of the vanilla 1.29 and 1.30
 scripts; it does not run anything.
 
