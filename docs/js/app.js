@@ -1,9 +1,16 @@
-const LEVELS = [
-  ['BREAK', 'Breaks on 1.30', 'break'],
-  ['RISK', 'Check by hand (1.30)', 'risk'],
-  ['INFO', 'Good to know (1.30)', 'info'],
-];
+let LEVELS = levelsFor({ stable: '1.30' }, false);
 const SHOW_LOCATIONS = 8;
+
+// [level, title, pill class]; the Exp levels only when the scan had an Exp build to compare.
+function levelsFor(versions, exp) {
+  const s = versions.stable.split('.').slice(0, 2).join('.');
+  const out = [['BREAK', `Breaks on ${s}`, 'break'], ['RISK', `Check by hand (${s})`, 'risk'], ['INFO', `Good to know (${s})`, 'info']];
+  if (exp) {
+    const e = 'Exp ' + versions.exp;
+    out.push(['BREAK_EXP', `Breaks on ${e}`, 'break'], ['RISK_EXP', `Check by hand (${e})`, 'risk'], ['INFO_EXP', `Good to know (${e})`, 'info']);
+  }
+  return out;
+}
 
 const $ = (id) => document.getElementById(id);
 const drop = $('drop');
@@ -122,7 +129,7 @@ function run(groups) {
   status.textContent = 'Starting...';
   drop.classList.add('busy');
   if (worker) worker.terminate();
-  worker = new Worker(new URL('./worker.js?v=202610220104', import.meta.url), { type: 'module' });
+  worker = new Worker(new URL('./worker.js?v=202610220333', import.meta.url), { type: 'module' });
   worker.onmessage = (ev) => {
     const d = ev.data;
     if (d.type === 'progress') {
@@ -130,7 +137,9 @@ function run(groups) {
     } else if (d.type === 'done') {
       drop.classList.remove('busy');
       const n = groups.length;
-      status.textContent = `Scanned ${n} mod${n === 1 ? '' : 's'} against DayZ ${d.versions.previous} and ${d.versions.stable}.`;
+      const exp = Object.values(d.report).some((r) => 'BREAK_EXP' in r);
+      LEVELS = levelsFor(d.versions, exp);
+      status.textContent = `Scanned ${n} mod${n === 1 ? '' : 's'} against DayZ ${d.versions.stable}` + (exp ? ` and Exp ${d.versions.exp}.` : '.');
       lastReport = { groups, report: d.report, errors: d.errors };
       render(lastReport);
       tally({ p: 'scan', t: 'Scan', e: 'true' });
@@ -147,15 +156,16 @@ function run(groups) {
 }
 
 // ---- report ----
-const count = (r, lv) => Object.keys(r[lv]).length;
+const count = (r, lv) => Object.keys(r[lv] || {}).length;
 
 function severity(r) {
-  return [count(r, 'BREAK'), count(r, 'RISK'), count(r, 'INFO')];
+  return [count(r, 'BREAK') + count(r, 'BREAK_EXP'), count(r, 'RISK') + count(r, 'RISK_EXP'), count(r, 'INFO') + count(r, 'INFO_EXP')];
 }
 
 function verdict(r) {
   const [b, k] = severity(r);
-  if (count(r, 'BREAK')) return ['break', 'Breaks on 1.30'];
+  if (count(r, 'BREAK')) return ['break', LEVELS[0][1]];
+  if (count(r, 'BREAK_EXP')) return ['break', LEVELS[3][1]];
   if (k) return ['risk', 'Check by hand'];
   if (!r.files) return ['none', 'No scripts'];
   return ['ok', 'No known breakers'];
@@ -180,12 +190,12 @@ function render(rep) {
     const counts = el('span', { class: 'counts' });
     for (const [lv, , c] of LEVELS) {
       const n = count(r, lv);
-      if (n && !(hideInfo && lv === 'INFO')) counts.append(el('span', { class: 'pill ' + c, title: LEVELS.find((x) => x[0] === lv)[1] }, `${n} ${lv.toLowerCase()}`));
+      if (n && !(hideInfo && lv.startsWith('INFO'))) counts.append(el('span', { class: 'pill ' + c, title: LEVELS.find((x) => x[0] === lv)[1] }, `${n} ${lv.replace('_EXP', ' exp').toLowerCase()}`));
     }
     const body = el('div', { class: 'detail' });
     for (const [lv, title, c] of LEVELS) {
-      if (hideInfo && lv === 'INFO') continue;
-      const msgs = Object.keys(r[lv]);
+      if (hideInfo && lv.startsWith('INFO')) continue;
+      const msgs = Object.keys(r[lv] || {});
       if (!msgs.length) continue;
       body.append(el('h4', { class: c }, title));
       for (const msg of msgs) {
@@ -235,8 +245,8 @@ function asText(rep) {
     const [, label] = verdict(r);
     lines.push(`**${g.mod}**: ${label} (${r.files} scripts)`);
     for (const [lv, title] of LEVELS) {
-      if (hideInfo && lv === 'INFO') continue;
-      for (const msg of Object.keys(r[lv])) {
+      if (hideInfo && lv.startsWith('INFO')) continue;
+      for (const msg of Object.keys(r[lv] || {})) {
         const locs = r[lv][msg];
         lines.push(`- ${title}: ${msg}`);
         locs.slice(0, 5).forEach((l) => lines.push(`  - ${l}`));
@@ -245,7 +255,7 @@ function asText(rep) {
     }
     lines.push('');
   }
-  lines.push('Static scan only: a clean result means no known 1.30 breaker was found, not that the mod works.');
+  lines.push('Static scan only: a clean result means no known breaker was found, not that the mod works.');
   return lines.join('\n');
 }
 
@@ -260,7 +270,7 @@ async function copyText(rep) {
 
 function downloadText(rep) {
   const url = URL.createObjectURL(new Blob([asText(rep)], { type: 'text/plain' }));
-  const a = el('a', { href: url, download: 'dayz-130-scan.txt' });
+  const a = el('a', { href: url, download: 'dayz-mod-scan.txt' });
   document.body.append(a);
   a.click();
   a.remove();

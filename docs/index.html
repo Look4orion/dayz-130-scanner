@@ -6,8 +6,8 @@
 <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: https://rook1969.goatcounter.com; connect-src 'self'; worker-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'">
 <title>DayZ Mod Scanner</title>
 <meta name="description" content="Check DayZ mods for known breaking changes on the current stable and the next experimental version. Runs in your browser; your files are never uploaded.">
-<link rel="stylesheet" href="style.css?v=202610220104">
-<script type="module" src="js/app.js?v=202610220104"></script>
+<link rel="stylesheet" href="style.css?v=202610220333">
+<script type="module" src="js/app.js?v=202610220333"></script>
 </head>
 <body>
 <main>
@@ -41,8 +41,8 @@
       <dd>Uses something 1.30 removed or changed, where the scanner can't tell for sure from the name alone: menus taking global input focus with <code>ChangeGameFocus</code> (no device), script folders written with backslashes whose code nothing else needs (it still compiles, but what they do is lost), backslash script paths into another mod's folder used for optional support (<code>#ifdef</code>), methods 1.30 made protected, version gates like <code>#ifdef DAYZ_1_30</code> that switch off again on 1.31, version gates in <code>1_Core</code> scripts (the version defines aren't set there yet, so they always take the "not defined" branch), overrides of obsolete methods 1.30 no longer calls (they compile but never run), calls to obsolete methods 1.30 left empty (they do nothing).</dd>
       <dt><span class="pill info">info</span> Good to know</dt>
       <dd>Still works, but behaves differently on 1.30: <code>CreateInInventory</code> refusing items that don't fit, obsolete methods 1.30 still calls, overrides of obsolete methods whose replacement the mod also overrides, car headlight overrides 1.30 no longer calls, backslash script folders that are empty or hold only empty classes.</dd>
-      <dt><span class="pill break">1.29</span> Won't compile on 1.29</dt>
-      <dd>For builds that must still run on 1.29 servers: code that uses classes or methods that only exist from 1.30, outside a <code>#ifndef DAYZ_1_29</code> block, and <code>FindFile</code> calls with flags <code>-1</code> (the workaround 1.30.164078 needed) and no retry, which list nothing on 1.29.</dd>
+      <dt><span class="pill break">exp</span> On the experimental build</dt>
+      <dd>While Bohemia has an experimental build open that is newer than stable, results also get "exp" grades (break, risk and info, as above) for what that build changes compared with stable: overrides of methods it removes or changes, names it adds that clash with the mod's methods, classes and members it removes, and methods it newly marks obsolete. With no newer experimental build open, results are for stable only.</dd>
     </dl>
     <h2>What it can't tell you</h2>
     <ul>
@@ -52,7 +52,7 @@
       <li>Code under a mod's own <code>#ifdef</code> is checked both ways, as if the define could be on or off.</li>
       <li>Mods that reference each other: drop them together, so names one mod defines count as known for the others.</li>
     </ul>
-    <p class="small">Compares against an index of vanilla class and method names built from the game's own scripts (DayZ 1.29.163709 and 1.30.164200 stable), updated for each new stable and experimental build. The same scanner also runs from the command line: <a href="https://github.com/Look4orion/dayz-130-scanner">source and instructions</a>.</p>
+    <p class="small">Compares against an index of vanilla class and method names built from the game's own scripts: the current stable build and, when one is open, the newer experimental build. It is updated for each new build. The same scanner also runs from the command line: <a href="https://github.com/Look4orion/dayz-130-scanner">source and instructions</a>.</p>
     <p class="small">Made by Rook: <a href="https://steamcommunity.com/id/rook1969/myworkshopfiles/" rel="noopener">my DayZ mods on the Workshop</a>.</p>
     <p><a href="https://ko-fi.com/rookmod" rel="noopener"><img src="kofi.png" alt="Support me on Ko-fi" width="178" height="36"></a></p>
   </section>

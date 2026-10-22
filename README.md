@@ -2,9 +2,8 @@
 
 Checks DayZ mods for known breaking changes on the current stable version (1.30). It's kept up
 to date: when Bohemia opens a new experimental version, the scanner adds its changes, so modders
-can see what will break before it reaches stable. It also checks whether a build still compiles
-on 1.29. It reads the mod's scripts and compares them with an index of the vanilla 1.29 and 1.30
-scripts; it does not run anything.
+can see what will break before it reaches stable. It reads the mod's scripts and compares them with
+an index of the vanilla scripts of those builds; it does not run anything.
 
 **Web version:** https://look4orion.github.io/dayz-130-scanner/. Drop a mod folder or its `.pbo`
 files on the page and get a report. The scan runs in your browser and your files are never uploaded:
@@ -22,13 +21,14 @@ shares a name with something vanilla removed shows up as a "check by hand" hit.
 
 ## What it checks
 
-Each script file is read twice, as a 1.29 server and as a 1.30 server compile it: `#ifdef` /
-`#ifndef` `DAYZ_1_29` / `DAYZ_1_30` blocks are resolved for that version (other defines, such as
-`SERVER` or a mod's own, keep both branches). Comments are ignored.
+Each script file is read as the current stable build compiles it, and again as the open
+experimental build compiles it when there is one. `#ifdef` / `#ifndef` `DAYZ_1_xx` blocks are
+resolved for that build: only its own version define is set (other defines, such as `SERVER` or a
+mod's own, keep both branches). Comments are ignored.
 
-**1.30** (`BREAK`, `RISK`, `INFO`):
+**Stable** (`BREAK`, `RISK`, `INFO`), compared with the build before it:
 - **Overrides** of a vanilla method that is gone in 1.30, or whose signature or return type changed.
-  Only reported when the mod's signature matched 1.29, which filters parser noise.
+  Only reported when the mod's signature matched the build before, which filters parser noise.
 - **Name clashes with methods vanilla added in 1.30.** A mod method (not `override`) with the same
   name as a new vanilla method in an ancestor class, or (for `modded class X`) in any subclass of X.
   This is what breaks Code Lock's `ItemBase.GetCodeLock()` against 1.30's `Fence.GetCodeLock()`.
@@ -37,13 +37,6 @@ Each script file is read twice, as a 1.29 server and as a 1.30 server compile it
   `CodeLock` is how a fix makes `DigitalCodeLock Fence.GetCodeLock()` compile.
 - **Uses** of removed methods, fields and classes. These are `RISK` only: the same name can belong to
   another mod's class, so check the receiver's type by hand.
-- **`FindFile`:** not a 1.30 check any more. 1.30.164078 listed nothing for `$profile:`/`$mission:`
-  folders (DZEXP-134); 1.30.164200 lists them with every flag value, including `-1` and backslash
-  paths (measured 2026-10-21). The `-1` workaround from 164078 lists nothing on 1.29, so a call
-  with flags `-1` and no retry in the same function, in a mod that never uses `FindFileFlags.ALL`,
-  is a 1.29 `RISK`. Counted as `-1`: the literal, a `const`/`static` the mod sets to `-1`, a method
-  of the mod that returns `-1`, or a variable or parameter of the calling function that it sets to
-  `-1` or that its callers pass `-1` into.
 - **Known patterns:** `ChangeGameFocus` with no device argument (global input focus freezes
   menu input on 1.30; the per-device form vanilla uses is fine), `GetFluidCapacityScript`,
   `CreateInInventory` (not inside `OnDebugSpawn`, which only an admin's debug spawn runs), `Fill`.
@@ -62,7 +55,7 @@ Each script file is read twice, as a 1.29 server and as a 1.30 server compile it
 - **Wrong version gates** (`RISK`): `#ifdef DAYZ_1_30` (off again on 1.31; use `#ifndef DAYZ_1_29`)
   and `BUILD_EXPERIMENTAL` (gone on 1.30 stable).
 - **Version gates in `1_Core`** (`RISK`): `#ifdef`/`#ifndef DAYZ_1_xx` in a 1_Core script. The
-  version defines aren't set yet when the Core module compiles (measured on 1.29), so the gate
+  version defines aren't set yet when the Core module compiles, so the gate
   always takes the "not defined" branch. Use a runtime fallback there instead.
 - **A variable named like another mod's class** (`BREAK`): a variable, parameter or field whose
   name is a class, enum or typedef another scanned mod declares, in a module that can see it
@@ -97,23 +90,20 @@ Each script file is read twice, as a 1.29 server and as a 1.30 server compile it
   overrides the current overload, or the replacement the `[Obsolete]` message names
   (`IsVitalTruckBattery` → `NeedElectricitySourceDevice`).
 
-**1.29** (`BREAK_129`, `RISK_129`), for builds that must still run on a 1.29 server:
-- `modded class` of, or `extends`, a class that only exists from 1.30.
-- Overrides of a method that only exists from 1.30, or written with its 1.30 signature.
-- Calls of methods that only exist from 1.30: `BREAK_129` when the receiver's class is known (a
-  variable's declared type, `Class.Method()`, or a getter with one return type, as in
-  `GetGame().GetContentDLCService().GetDLCFromWorld()`), `RISK_129` otherwise. Uses of classes
-  that only exist from 1.30 are `RISK_129`.
+**Experimental** (`BREAK_EXP`, `RISK_EXP`, `INFO_EXP`), only while the vanilla index holds an
+experimental build newer than stable: the overrides, name-clash, removed-use, protected and
+`[Obsolete]` checks above, comparing the experimental build with stable. Only methods the
+experimental build newly marks `[Obsolete]` count, and Workbench-only classes are not reported in
+folders the game never compiles. The other checks above (known patterns, Workbench classes,
+version gates, backslash paths, name clashes between mods) run for stable only.
 
 A method or field a mod declares in any of its own files counts as the mod's own, so calling it is
 never mistaken for the vanilla name (overrides don't count: a call may still reach vanilla's).
-Names that any scanned mod declares count as known for the 1.29 checks, so scan mods that depend
-on each other together.
 
 ## Known limits
 
-- The parser is regex and brace based. Defines other than `DAYZ_1_29`/`DAYZ_1_30` are not
-  evaluated, so code under `#ifdef SERVER` or a mod's own define counts for both branches.
+- The parser is regex and brace based. Defines other than the `DAYZ_1_xx` version defines are
+  not evaluated, so code under `#ifdef SERVER` or a mod's own define counts for both branches.
 - Scrambled (obfuscated) PBOs parse, but hits there need a closer look. Both scanners read the
   PBOs in memory. `extract.py`, which writes the scripts to disk for reading, can't write a few of
   the decoy files in heavily scrambled PBOs (Windows refuses their paths), so a scan of its output
