@@ -147,11 +147,26 @@ declare; needs the vanilla config files unpacked).
 ## The vanilla index
 
 `docs/vanilla.json` holds the names and signatures of the vanilla classes, methods and fields (no
-code), built from DayZ 1.29.163709 and 1.30.164200 (stable). To rebuild it after a game update, point
-`vanilla.py` at the `scripts.pbo` in each game version's `dta` folder (server or client):
-```
-python -I python/vanilla.py <1.29 dta/scripts.pbo> <1.30 dta/scripts.pbo> docs/vanilla.json 1.29.xxxxxx 1.30.xxxxxx
-```
+code) of up to three builds, by role: `stable` (the current stable build), `previous` (the build
+stable is compared against) and `exp` (the open experimental build, when there is one newer than
+stable). `versions` names the build in each role. A build is read from the `scripts.pbo` in that
+install's `dta` folder (server or client), or an unpacked scripts folder.
+
+## Updating for a new DayZ build
+
+1. Update the data, by what changed:
+   - **Stable hotfix** (same major.minor): `python -I python/vanilla.py set docs/vanilla.json stable <dta/scripts.pbo> <version>`
+   - **New stable** (an Exp went stable): `python -I python/vanilla.py rotate docs/vanilla.json <stable dta/scripts.pbo> <version>`.
+     The old stable becomes `previous`, and `exp` is cleared.
+   - **New Exp**: `python -I python/vanilla.py set docs/vanilla.json exp <exp dta/scripts.pbo> <version>`.
+     It refuses a build that isn't newer than stable.
+   - **Exp closed, or only mirroring stable**: `python -I python/vanilla.py clear-exp docs/vanilla.json`
+2. Run `python -I tools/rules.py`. It lists every hand-written check last verified on an older build
+   than stable. Confirm each one on the new build and raise its `verified` in `tools/hand_rules.json`,
+   or change it or drop it, in both scanners.
+3. Scan the same mod set with the old and the new data, and run
+   `python -I tools/before_after.py old.json new.json`. Every difference needs an explanation.
+4. Run the parity check below, then `tools/stamp.py`, then push.
 
 ## Development
 
