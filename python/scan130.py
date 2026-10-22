@@ -4,7 +4,7 @@ Usage: scan130.py vanilla.json --pbo mods.tsv <mods root> <out.json>   (reads th
 With mods.tsv and the mods root, CfgMods script paths are checked too."""
 import sys, os, json, re, glob
 sys.path.insert(0, os.path.dirname(__file__))
-from enfparse import parse, strip, preprocess, nocomment, call_args, call_types, sig_fits, V130
+from enfparse import parse, strip, preprocess, nocomment, call_args, call_types, sig_fits, defines_for
 
 V = json.load(open(sys.argv[1]))
 A, B = V['previous'], V['stable']
@@ -51,86 +51,106 @@ def names(ix):
 
 
 # Names defined anywhere in vanilla (classes, methods, fields): a usage of these is not "removed" / "new".
-ALL130 = names(B)
+STABLE_DEFS = defines_for(V['versions']['stable'])
 
-# Types 1.30 declares only under #ifdef WORKBENCH (vanilla.py leaves them out of the stable index): their own check.
+
+def extras(role):
+    return {k: V.get(k, {}).get(role, {}) for k in ('workbench', 'obsolete', 'obsoleteDefs', 'obsoleteCalls', 'obsoleteUse')}
+
+
+class Delta:
+    """What changed from one vanilla build (old) to the next (new); messages name the new one by label."""
+
+    def __init__(self, old, new, ex, label, keep_classes=(), old_obsolete=None):
+        self.old, self.new, self.label = old, new, label
+        # classes new declares only for Workbench: gone for game scripts, not for Workbench-only folders
+        self.wb_only = set(ex['workbench'] or [])
+        self.only_new_obsolete = old_obsolete is not None
+        self.all_new = names(new)
+        self.removed_classes = {c for c in old if c not in new and c not in keep_classes}
+        self.children = {}
+        for cn, c in new.items():
+            if c['base']:
+                self.children.setdefault(c['base'], []).append(cn)
+        self.lower = {cn.lower(): cn for cn in new}
+        self.removed_members = {}  # name -> "Class.member"
+        for cn, c in old.items():
+            if cn not in new:
+                continue
+            for m in c['methods']:
+                if find_method(new, cn, m)[0] is None and m not in self.all_new:
+                    self.removed_members.setdefault(m, cn + '.' + m + '()')
+            for f in c['fields']:
+                if not has_field(new, cn, f) and f not in self.all_new:
+                    self.removed_members.setdefault(f, cn + '.' + f)
+        # public in old, protected/private in new, where no new class keeps a public one of that name
+        public = {m for c in new.values() for m, ss in c['methods'].items() if any(s.get('access', 'public') == 'public' for s in ss)}
+        self.now_protected = {}
+        for cn, c in old.items():
+            for m, ss in c['methods'].items():
+                if new.get(cn, {}).get('methods', {}).get(m) and m not in public and any(s.get('access', 'public') == 'public' for s in ss):
+                    self.now_protected.setdefault(m, cn + '.' + m + '()')
+        self.obsolete = set(ex['obsolete'] or []) - set(old_obsolete or [])
+        self.obs_defs = ex['obsoleteDefs'] or {}  # "Class.method" -> [{n, req, stub, params}]
+        # Argument types vanilla still calls each obsolete name with ('' = unknown), calls that fit a current overload left out.
+        self.obs_calls = {n: [tuple(c) for c in a] for n, a in (ex['obsoleteCalls'] or {}).items()}
+        # Methods an obsolete method's message says to use instead ("1.30: use Transport.NeedElectricitySourceDevice").
+        self.obs_use = ex['obsoleteUse'] or {}
+        # Parameter lists of current (not obsolete) methods sharing an obsolete name: a call that fits one may be one of them.
+        self.live_sigs, self.live_class = {}, {}
+        for cn in sorted(new):
+            for m, ss in new[cn]['methods'].items():
+                if m in self.obsolete:
+                    live = [s['params'] for s in ss if not s.get('obsolete')]
+                    self.live_sigs.setdefault(m, []).extend(live)
+                    if live:
+                        self.live_class.setdefault(m, cn)
+
+    def descendants(self, cn):
+        out, todo = [], [cn]
+        seen = set()
+        while todo:
+            x = todo.pop()
+            for ch in self.children.get(x, []):
+                if ch not in seen:
+                    seen.add(ch)
+                    out.append(ch)
+                    todo.append(ch)
+        return out
+
+    def added(self, cn, m):
+        """Vanilla added m to cn (a mod method of that name on an ancestor or descendant now collides)."""
+        return m in self.new.get(cn, {}).get('methods', {}) and m not in self.old.get(cn, {}).get('methods', {})
+
+    def is_subtype(self, sub, sup):
+        return sub == sup or (sub in self.lower and any(x.lower() == sup for x in chain(self.new, self.lower[sub])))
+
+    def overrides_cleanly(self, cn, m, ovs):
+        """Vanilla's new cn.m() is a valid override of the mod's m(): same parameters, and its return
+        type is the mod's or a subclass of it (Code Lock's ItemBase GetCodeLock() vs 1.30's
+        DigitalCodeLock Fence.GetCodeLock() compiles, measured 2026-10-08)."""
+        return all(any(sig(o) == sig(v) and self.is_subtype(v['ret'], o['ret']) for o in ovs) for v in self.new[cn]['methods'][m])
+
+    def obs_called(self, key, params):
+        """Whether vanilla still calls the obsolete Class.method with these parameter types."""
+        ds = self.obs_defs.get(key, [])
+        ds = [d for d in ds if d['params'] == list(params)] or [d for d in ds if d['n'] == len(params)] or ds
+        return not ds or any(obs_fits(d, c) for d in ds for c in self.obs_calls.get(key.split('.')[1], ()))
+
+
+def ver(s):
+    return tuple(int(x) for x in re.findall(r'\d+', s)[:3])
+
+
+# Types stable declares only under #ifdef WORKBENCH (vanilla.py leaves them out of its index): their own check.
 WB_ONLY = set(V.get('workbench', {}).get('stable', []))
-REMOVED_CLASSES = {c for c in A if c not in B and c not in WB_ONLY}
-
-# Methods vanilla ADDED in 1.30 (name not on that class in 1.29). A mod method of the same name
-# on an ancestor or descendant now collides with it.
-CHILDREN = {}
-for cn, c in B.items():
-    if c['base']:
-        CHILDREN.setdefault(c['base'], []).append(cn)
-
-
-def descendants(cn):
-    out, todo = [], [cn]
-    seen = set()
-    while todo:
-        x = todo.pop()
-        for ch in CHILDREN.get(x, []):
-            if ch not in seen:
-                seen.add(ch)
-                out.append(ch)
-                todo.append(ch)
-    return out
-
-
-def added_in_130(cn, m):
-    return m in B.get(cn, {}).get('methods', {}) and m not in A.get(cn, {}).get('methods', {})
-
-
-LOWER130 = {cn.lower(): cn for cn in B}
-
-
-def is_subtype(sub, sup):
-    return sub == sup or (sub in LOWER130 and any(x.lower() == sup for x in chain(B, LOWER130[sub])))
-
-
-def overrides_cleanly(cn, m, ovs):
-    """Vanilla's new cn.m() is a valid override of the mod's m(): same parameters, and its return
-    type is the mod's or a subclass of it (Code Lock's ItemBase GetCodeLock() vs 1.30's
-    DigitalCodeLock Fence.GetCodeLock() compiles, measured 2026-10-08)."""
-    return all(any(sig(o) == sig(v) and is_subtype(v['ret'], o['ret']) for o in ovs) for v in B[cn]['methods'][m])
-REMOVED_MEMBERS = {}  # name -> "Class.member"
-for cn, c in A.items():
-    if cn not in B:
-        continue
-    for m in c['methods']:
-        if find_method(B, cn, m)[0] is None and m not in ALL130:
-            REMOVED_MEMBERS.setdefault(m, cn + '.' + m + '()')
-    for f in c['fields']:
-        if not has_field(B, cn, f) and f not in ALL130:
-            REMOVED_MEMBERS.setdefault(f, cn + '.' + f)
-
-# Methods public in 1.29 that 1.30 made protected/private, where no 1.30 class keeps a public one of that name.
-PUBLIC130 = {m for c in B.values() for m, ss in c['methods'].items() if any(s.get('access', 'public') == 'public' for s in ss)}
-NOW_PROTECTED = {}  # name -> "Class.method"
-for cn, c in A.items():
-    for m, ss in c['methods'].items():
-        s30 = B.get(cn, {}).get('methods', {}).get(m)
-        if s30 and m not in PUBLIC130 and any(s.get('access', 'public') == 'public' for s in ss):
-            NOW_PROTECTED.setdefault(m, cn + '.' + m + '()')
-
-# [Obsolete] methods in 1.30 (vanilla.py collects them)
-OBSOLETE = set(V['obsolete']['stable'])
-OBS_DEFS = V.get('obsoleteDefs', {}).get('stable', {})  # "Class.method" -> [{n, req, stub, params}]
-# Argument types vanilla still calls each obsolete name with ('' = unknown), calls that fit a current overload left out.
-OBS_CALLS = {n: [tuple(c) for c in a] for n, a in V.get('obsoleteCalls', {}).get('stable', {}).items()}
-# Methods an obsolete method's message says to use instead ("1.30: use Transport.NeedElectricitySourceDevice").
-OBS_USE = V.get('obsoleteUse', {}).get('stable', {})
-# Parameter lists of current (not obsolete) methods sharing an obsolete name: a call that fits one may be one of them.
-LIVE_SIGS = {}
-LIVE_CLASS = {}  # first class (by name) with a current method of that name
-for _cn in sorted(B):
-    for _m, _ss in B[_cn]['methods'].items():
-        if _m in OBSOLETE:
-            live = [s['params'] for s in _ss if not s.get('obsolete')]
-            LIVE_SIGS.setdefault(_m, []).extend(live)
-            if live:
-                LIVE_CLASS.setdefault(_m, _cn)
+STABLE = Delta(A, B, extras('stable'), '.'.join(V['versions']['stable'].split('.')[:2]), WB_ONLY)
+EXP = None
+if 'exp' in V and ver(V['versions']['exp']) > ver(V['versions']['stable']):
+    EXP = Delta(B, V['exp'], extras('exp'), 'Exp ' + V['versions']['exp'], old_obsolete=extras('stable')['obsolete'])
+    EXP_DEFS = defines_for(V['versions']['exp'])
+LEVELS = ('BREAK', 'RISK', 'INFO') + (('BREAK_EXP', 'RISK_EXP', 'INFO_EXP') if EXP else ())
+ALL130 = STABLE.all_new
 # Obsolete overrides with their own, more specific note in PATTERNS.
 OBS_NOTED = {'OnCEUpdate', 'CreateFrontLight', 'CreateRearLight', 'GetNoiseReduction', 'GetNoiseReductionByWeather'}
 
@@ -138,12 +158,6 @@ OBS_NOTED = {'OnCEUpdate', 'CreateFrontLight', 'CreateRearLight', 'GetNoiseReduc
 def obs_fits(d, call):
     return sig_fits(call, d['params'], d['req'])
 
-
-def obs_called(key, params):
-    """Whether 1.30 vanilla still calls the obsolete Class.method with these parameter types."""
-    ds = OBS_DEFS.get(key, [])
-    ds = [d for d in ds if d['params'] == list(params)] or [d for d in ds if d['n'] == len(params)] or ds
-    return not ds or any(obs_fits(d, c) for d in ds for c in OBS_CALLS.get(key.split('.')[1], ()))
 
 # Matched against the code a 1.30 server compiles (inactive #ifdef branches and comments removed).
 PATTERNS = [
@@ -194,7 +208,7 @@ CORE_GATE_MSG = ('version gate (#ifdef/#ifndef DAYZ_1_xx) in a 1_Core script: th
                  'when the Core module compiles, so it always takes the "not defined" branch')
 WB_MSG = ('uses a class 1.30 declares only for Workbench (#ifdef WORKBENCH): outside an #ifdef WORKBENCH block '
           'the module does not compile ("Can\'t find variable")')
-WB_GAME = dict(V130, WORKBENCH=False)
+WB_GAME = dict(STABLE_DEFS, WORKBENCH=False)
 STRING = re.compile(r'"(?:[^"\\\n]|\\.)*"')
 CROSS_CALL = re.compile(r'\.\s*Cross\s*\(')
 CROSS_MSG = ('calls vector.Cross(), which 1.30.164078 added and 1.30.164200 removed again: the module does not '
@@ -228,7 +242,10 @@ def owns_path(pbos, path):
 
 def load(raw):
     out = {'raw': raw}
-    for tag, defs in (('stable', V130),):
+    for tag, defs in (('stable', STABLE_DEFS),) + ((('exp', EXP_DEFS),) if EXP else ()):
+        if tag == 'exp' and defs == STABLE_DEFS:
+            out[tag] = out['stable']
+            continue
         src = preprocess(nocomment(raw), defs)
         try:
             cls = parse(src)
@@ -238,11 +255,14 @@ def load(raw):
     return out
 
 
+
+PASSES = ('stable', 'exp') if EXP else ('stable',)
+
 def own_classes(parsed):
     """Classes the mod declares (not modded), by name."""
     out = {}
     for _, p in parsed:
-        for tag in ('stable',):
+        for tag in PASSES:
             for c in p[tag][1]:
                 if not c['modded']:
                     out.setdefault(c['name'], c)
@@ -260,7 +280,7 @@ def vanilla_base(c, modclasses, ix):
     return b if b in ix else None
 
 
-def receivers(body, t, modclasses):
+def receivers(body, t, modclasses, ix):
     """{("Class.t", declared type)} for every x.t() call whose x has a declared type; empty if any call can't be resolved."""
     out = set()
     for m in re.finditer(r'(\.\s*)?\b(\w+)\s*\.\s*' + t + r'\s*\(', body):
@@ -268,16 +288,127 @@ def receivers(body, t, modclasses):
             return set()  # a.b.t(): receiver type unknown
         typ = next((d.group(1) for d in re.finditer(r'\b(\w+)\s+' + m.group(2) + r'\s*[=;,)]', body)
                     if d.group(1) not in ('return', 'new', 'delete', 'out', 'inout', 'ref', 'autoptr')), None)
-        vc = typ if typ in B else (vanilla_base(modclasses[typ], modclasses, B) if typ in modclasses else None)
-        cls, _ = find_method(B, vc, t) if vc else (None, None)
+        vc = typ if typ in ix else (vanilla_base(modclasses[typ], modclasses, ix) if typ in modclasses else None)
+        cls, _ = find_method(ix, vc, t) if vc else (None, None)
         if not cls:
             return set()
         out.add((cls + '.' + t, typ))
     return out
 
 
+
+def diff_checks(vd, rel, src, cls, modclasses, mod_own, mod_overrides, add):
+    """Checks that follow from the vanilla diff d, on what a server of vd's new build compiles from this file."""
+    for c in cls:
+        name = c['name']
+        if c['modded']:
+            if name in vd.removed_classes:
+                add('BREAK', 'modded class of class removed in ' + vd.label + ': ' + name, rel)
+        elif c['base'] in vd.removed_classes:
+            add('BREAK', 'class extends class removed in ' + vd.label + ': ' + c['base'], rel + ' (' + name + ')')
+        vbase = vanilla_base(c, modclasses, vd.old)
+        if vbase and vbase in vd.new:
+            # vanilla method new in vd.new with the same name as one this mod adds (no override)
+            for mn, ovs in c['methods'].items():
+                if any(ov['override'] for ov in ovs) or mn in (name, vbase) or mn.startswith('~'):
+                    continue  # overrides, constructors and destructors
+                anc = [x for x in chain(vd.new, vbase) if vd.added(x, mn)]
+                desc = [x for x in vd.descendants(vbase) if vd.added(x, mn) and not vd.overrides_cleanly(x, mn, ovs)] if c['modded'] else []
+                if anc:
+                    add('BREAK', 'adds %s.%s(), but %s vanilla now defines %s() in %s (name clash)' % (name, mn, vd.label, mn, anc[0]), rel)
+                elif desc:
+                    add('BREAK', 'adds %s() to every %s, but %s vanilla now defines %s() in subclass %s (name clash)' % (mn, name, vd.label, mn, ', '.join(desc[:3])), rel)
+        if not vbase or vbase not in vd.old:
+            continue
+        for mn, ovs in c['methods'].items():
+            for ov in ovs:
+                if not ov['override']:
+                    continue
+                vc, ms29 = find_method(vd.old, vbase, mn)
+                if not vc:
+                    continue
+                s = sig(ov)
+                if s not in {sig(m) for m in ms29}:
+                    continue  # mod didn't match the old build either (parser noise, mod-side base, or new-build code); skip
+                vc30, ms30 = find_method(vd.new, vbase if vbase in vd.new else vc, mn)
+                if not vc30:
+                    add('BREAK', 'overrides ' + vc + '.' + mn + '() which no longer exists in ' + vd.label, rel)
+                elif s not in {sig(m) for m in ms30}:
+                    new = ' | '.join('(' + ', '.join(m['params']) + ')' for m in ms30)
+                    add('BREAK', 'override signature changed: ' + vc30 + '.' + mn + '(' + ', '.join(s) + ') is now ' + new, rel)
+                else:
+                    r29 = {m['ret'] for m in ms29 if sig(m) == s}
+                    r30 = {m['ret'] for m in ms30 if sig(m) == s}
+                    if r29 and r30 and not (r29 & r30):
+                        add('BREAK', 'override return type changed: ' + vc30 + '.' + mn + ' ' + '/'.join(sorted(r29)) + ' -> ' + '/'.join(sorted(r30)), rel)
+                    if mn not in OBS_NOTED and any(m.get('obsolete') for m in ms30 if sig(m) == s) and not (
+                            vd.only_new_obsolete and any(m.get('obsolete') for m in ms29 if sig(m) == s)):
+                        live30 = {sig(m) for m in ms30 if not m.get('obsolete')}
+                        also = [sig(o) for o in ovs if o['override'] and sig(o) in live30]
+                        repl = [u for u in vd.obs_use.get(mn, []) if u != mn and any(o['override'] for o in c['methods'].get(u, []))]
+                        what = 'overrides ' + vc30 + '.' + mn + '(' + ', '.join(s) + '), marked [Obsolete] in ' + vd.label
+                        if also:
+                            add('INFO', what + '; the same class also overrides the current (' + ', '.join(also[0]) + ') version, so nothing is lost', rel)
+                        elif repl:
+                            add('INFO', what + '; the same class also overrides ' + repl[0] + '(), its ' + vd.label + ' replacement, so nothing is lost', rel)
+                        elif vd.obs_called(vc30 + '.' + mn, s):
+                            add('INFO', what, rel)
+                        else:
+                            add('RISK', what + ' and never called by ' + vd.label + ' vanilla: the override does not run', rel)
+    body = strip(src)
+    own = set(modclasses) | mod_own
+    for c in cls:
+        own.update(c['methods'])
+        own.update(c['fields'])
+    toks = set(IDENT.findall(body))
+    for t in toks & set(vd.removed_members):
+        if t in GENERIC and not re.search(GENERIC[t], body):
+            continue
+        if t not in own:
+            add('RISK', 'uses ' + vd.removed_members[t] + ', removed in ' + vd.label, rel)
+    for t in toks & vd.removed_classes:
+        if t in GENERIC and not re.search(GENERIC[t], body):
+            continue
+        if t in vd.wb_only and (not module_rank(rel) or WORKBENCH_DIR.search(rel)):
+            continue
+        if t not in own:
+            add('RISK', 'uses class ' + t + ', removed in ' + vd.label, rel)
+    for t in toks & vd.obsolete:
+        if t in own:
+            continue
+        calls = call_types(body, t)
+        mine = [d for k, v in vd.obs_defs.items() if k.split('.')[1] == t for d in v]
+        if mine:
+            calls = {c for c in calls if any(obs_fits(d, c) for d in mine)}
+        if not calls:
+            continue  # no call, or only the current overloads are called
+        ar = {c for c in calls if not any(sig_fits(c, p, len(p)) for p in vd.live_sigs.get(t, []))}
+        ds = [d for d in mine if any(obs_fits(d, c) for c in ar)]
+        if not ar:
+            reach = receivers(body, t, modclasses, vd.new)
+            if reach and all(k in vd.obs_defs for k, _ in reach):
+                if not all(d['stub'] for k, _ in reach for d in vd.obs_defs[k]):
+                    k, typ = sorted(reach)[0]
+                    add('INFO', 'calls ' + k + '() on a ' + typ + ': [Obsolete] in ' + vd.label + ' but still there, so it works (compile warning)', rel)
+                    continue
+            elif reach and not any(k in vd.obs_defs for k, _ in reach):
+                continue  # every call reaches a current method
+            obs = sorted(k for k in vd.obs_defs if k.split('.')[1] == t)
+            add('INFO', 'calls ' + t + '(): ' + ', '.join(obs) + '() is [Obsolete] in ' + vd.label + ' but ' + vd.live_class[t] + '.' + t + '() is not; check which one this call reaches', rel)
+        elif ds and all(d['stub'] for d in ds) and t not in mod_overrides:
+            add('RISK', 'calls ' + t + '(), which ' + vd.label + ' left as a placeholder (empty, or returns a fixed value): it compiles but does nothing', rel)
+        else:
+            add('INFO', 'calls ' + t + '() marked [Obsolete] in ' + vd.label, rel)
+    for t in toks & set(vd.now_protected):
+        if t in own:
+            continue
+        for m in re.finditer(r'(\w+)\s*\.\s*' + t + r'\s*\(', body):
+            if m.group(1) not in ('super', 'this'):
+                add('RISK', 'calls ' + vd.now_protected[t] + ' from outside the class; ' + vd.label + ' made it protected (unverified whether that compiles)', rel)
+                break
+
 def scan_files(files):
-    res = {'BREAK': {}, 'RISK': {}, 'INFO': {}}
+    res = {lv: {} for lv in LEVELS}
 
     def add(level, msg, where):
         res[level].setdefault(msg, [])
@@ -290,7 +421,7 @@ def scan_files(files):
     mod_own = set()
     mod_overrides = set()  # a call to one of these may reach the mod's own body
     for _, p in parsed:
-        for tag in ('stable',):
+        for tag in PASSES:
             for c in p[tag][1]:
                 mod_own.update(m for m, o in c['methods'].items() if not any(v['override'] for v in o))
                 mod_overrides.update(m for m, o in c['methods'].items() if any(v['override'] for v in o))
@@ -322,112 +453,10 @@ def scan_files(files):
                     continue
                 add(level, msg, rel + ':' + str(src30.count('\n', 0, m.start()) + 1))
 
-        # ---- 1.30: what a 1.30 server compiles from this file
-        for c in cls:
-            name = c['name']
-            if c['modded']:
-                if name in REMOVED_CLASSES:
-                    add('BREAK', 'modded class of class removed in 1.30: ' + name, rel)
-            elif c['base'] in REMOVED_CLASSES:
-                add('BREAK', 'class extends class removed in 1.30: ' + c['base'], rel + ' (' + name + ')')
-            vbase = vanilla_base(c, modclasses, A)
-            if vbase and vbase in B:
-                # new-in-1.30 vanilla method with the same name as one this mod adds (no override)
-                for mn, ovs in c['methods'].items():
-                    if any(ov['override'] for ov in ovs) or mn in (name, vbase) or mn.startswith('~'):
-                        continue  # overrides, constructors and destructors
-                    anc = [x for x in chain(B, vbase) if added_in_130(x, mn)]
-                    desc = [x for x in descendants(vbase) if added_in_130(x, mn) and not overrides_cleanly(x, mn, ovs)] if c['modded'] else []
-                    if anc:
-                        add('BREAK', 'adds %s.%s(), but 1.30 vanilla now defines %s() in %s (name clash)' % (name, mn, mn, anc[0]), rel)
-                    elif desc:
-                        add('BREAK', 'adds %s() to every %s, but 1.30 vanilla now defines %s() in subclass %s (name clash)' % (mn, name, mn, ', '.join(desc[:3])), rel)
-            if not vbase or vbase not in A:
-                continue
-            for mn, ovs in c['methods'].items():
-                for ov in ovs:
-                    if not ov['override']:
-                        continue
-                    vc, ms29 = find_method(A, vbase, mn)
-                    if not vc:
-                        continue
-                    s = sig(ov)
-                    if s not in {sig(m) for m in ms29}:
-                        continue  # mod didn't match 1.29 either (parser noise, mod-side base, or 1.30 code); skip
-                    vc30, ms30 = find_method(B, vbase if vbase in B else vc, mn)
-                    if not vc30:
-                        add('BREAK', 'overrides ' + vc + '.' + mn + '() which no longer exists in 1.30', rel)
-                    elif s not in {sig(m) for m in ms30}:
-                        new = ' | '.join('(' + ', '.join(m['params']) + ')' for m in ms30)
-                        add('BREAK', 'override signature changed: ' + vc30 + '.' + mn + '(' + ', '.join(s) + ') is now ' + new, rel)
-                    else:
-                        r29 = {m['ret'] for m in ms29 if sig(m) == s}
-                        r30 = {m['ret'] for m in ms30 if sig(m) == s}
-                        if r29 and r30 and not (r29 & r30):
-                            add('BREAK', 'override return type changed: ' + vc30 + '.' + mn + ' ' + '/'.join(sorted(r29)) + ' -> ' + '/'.join(sorted(r30)), rel)
-                        if mn not in OBS_NOTED and any(m.get('obsolete') for m in ms30 if sig(m) == s):
-                            live30 = {sig(m) for m in ms30 if not m.get('obsolete')}
-                            also = [sig(o) for o in ovs if o['override'] and sig(o) in live30]
-                            repl = [u for u in OBS_USE.get(mn, []) if u != mn and any(o['override'] for o in c['methods'].get(u, []))]
-                            what = 'overrides ' + vc30 + '.' + mn + '(' + ', '.join(s) + '), marked [Obsolete] in 1.30'
-                            if also:
-                                add('INFO', what + '; the same class also overrides the current (' + ', '.join(also[0]) + ') version, so nothing is lost', rel)
-                            elif repl:
-                                add('INFO', what + '; the same class also overrides ' + repl[0] + '(), its 1.30 replacement, so nothing is lost', rel)
-                            elif obs_called(vc30 + '.' + mn, s):
-                                add('INFO', what, rel)
-                            else:
-                                add('RISK', what + ' and never called by 1.30 vanilla: the override does not run', rel)
-        body = strip(src30)
-        own = set(modclasses) | mod_own
-        for c in cls:
-            own.update(c['methods'])
-            own.update(c['fields'])
-        toks = set(IDENT.findall(body))
-        for t in toks & set(REMOVED_MEMBERS):
-            if t in GENERIC and not re.search(GENERIC[t], body):
-                continue
-            if t not in own:
-                add('RISK', 'uses ' + REMOVED_MEMBERS[t] + ', removed in 1.30', rel)
-        for t in toks & REMOVED_CLASSES:
-            if t in GENERIC and not re.search(GENERIC[t], body):
-                continue
-            if t not in own:
-                add('RISK', 'uses class ' + t + ', removed in 1.30', rel)
-        for t in toks & OBSOLETE:
-            if t in own:
-                continue
-            calls = call_types(body, t)
-            mine = [d for k, v in OBS_DEFS.items() if k.split('.')[1] == t for d in v]
-            if mine:
-                calls = {c for c in calls if any(obs_fits(d, c) for d in mine)}
-            if not calls:
-                continue  # no call, or only the current overloads are called
-            ar = {c for c in calls if not any(sig_fits(c, p, len(p)) for p in LIVE_SIGS.get(t, []))}
-            ds = [d for d in mine if any(obs_fits(d, c) for c in ar)]
-            if not ar:
-                reach = receivers(body, t, modclasses)
-                if reach and all(k in OBS_DEFS for k, _ in reach):
-                    if not all(d['stub'] for k, _ in reach for d in OBS_DEFS[k]):
-                        k, typ = sorted(reach)[0]
-                        add('INFO', 'calls ' + k + '() on a ' + typ + ': [Obsolete] in 1.30 but still there, so it works (compile warning)', rel)
-                        continue
-                elif reach and not any(k in OBS_DEFS for k, _ in reach):
-                    continue  # every call reaches a current method
-                obs = sorted(k for k in OBS_DEFS if k.split('.')[1] == t)
-                add('INFO', 'calls ' + t + '(): ' + ', '.join(obs) + '() is [Obsolete] in 1.30 but ' + LIVE_CLASS[t] + '.' + t + '() is not; check which one this call reaches', rel)
-            elif ds and all(d['stub'] for d in ds) and t not in mod_overrides:
-                add('RISK', 'calls ' + t + '(), which 1.30 left as a placeholder (empty, or returns a fixed value): it compiles but does nothing', rel)
-            else:
-                add('INFO', 'calls ' + t + '() marked [Obsolete] in 1.30', rel)
-        for t in toks & set(NOW_PROTECTED):
-            if t in own:
-                continue
-            for m in re.finditer(r'(\w+)\s*\.\s*' + t + r'\s*\(', body):
-                if m.group(1) not in ('super', 'this'):
-                    add('RISK', 'calls ' + NOW_PROTECTED[t] + ' from outside the class; 1.30 made it protected (unverified whether that compiles)', rel)
-                    break
-
+        diff_checks(STABLE, rel, src30, cls, modclasses, mod_own, mod_overrides, add)
+        if EXP:
+            src_exp, cls_exp = p['exp']
+            diff_checks(EXP, rel, src_exp, cls_exp, modclasses, mod_own, mod_overrides, lambda lv, msg, where: add(lv + '_EXP', msg, where))
     return res
 
 
@@ -596,7 +625,7 @@ SKIPPED = {rel for n, _, _, path in _skips if owns_path(manifest[n]['pbos'], pat
 VANILLA_NAMES = ALL130
 for n, info in manifest.items():
     files = FILES[n]
-    r = scan_files(files) if files else {'BREAK': {}, 'RISK': {}, 'INFO': {}}
+    r = scan_files(files) if files else {lv: {} for lv in LEVELS}
     for pbo, mod_, path in SCRIPT_PATHS.get(n, []):
         if mod_ and mod_.lower().endswith('scriptmodule'):
             where = pbo + ': ' + mod_ + ' = ' + path
@@ -616,8 +645,9 @@ for n, info in manifest.items():
     r['files'] = len(files)
     report[n] = r
 json.dump(report, open(OUT, 'w'), indent=1)
-print('removed classes', len(REMOVED_CLASSES), 'removed members', len(REMOVED_MEMBERS), 'obsolete', len(OBSOLETE),
-      'now protected', len(NOW_PROTECTED))
+print('removed classes', len(STABLE.removed_classes), 'removed members', len(STABLE.removed_members), 'obsolete', len(STABLE.obsolete),
+      'now protected', len(STABLE.now_protected))
 for n, r in sorted(report.items(), key=lambda kv: int(kv[0])):
-    print(n, r['mod'], 'B=%d R=%d I=%d' % (len(r['BREAK']), len(r['RISK']), len(r['INFO'])),
+    print(n, r['mod'], 'B=%d R=%d I=%d' % (len(r['BREAK']), len(r['RISK']), len(r['INFO']))
+          + (' | exp: B=%d R=%d I=%d' % (len(r['BREAK_EXP']), len(r['RISK_EXP']), len(r['INFO_EXP'])) if EXP else ''),
           'unscanned:' + ','.join(r['unscanned_pbos']) if r['unscanned_pbos'] else '')

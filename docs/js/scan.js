@@ -1,6 +1,6 @@
 // Port of python/scan130.py.
 import { re, search, finditer, findall, fullmatch, countChar, strip as pyStrip } from './pyre.js?v=202610220104';
-import { parse, strip, preprocess, nocomment, V130 } from './enfparse.js?v=202610220104';
+import { parse, strip, preprocess, nocomment, definesFor } from './enfparse.js?v=202610220104';
 
 const LEVELS = ['BREAK', 'RISK', 'INFO'];
 
@@ -103,7 +103,6 @@ const CORE_GATE_MSG = 'version gate (#ifdef/#ifndef DAYZ_1_xx) in a 1_Core scrip
   'when the Core module compiles, so it always takes the "not defined" branch';
 const WB_MSG = 'uses a class 1.30 declares only for Workbench (#ifdef WORKBENCH): outside an #ifdef WORKBENCH block ' +
   'the module does not compile ("Can\'t find variable")';
-const WB_GAME = { ...V130, WORKBENCH: false };
 const STRING = re('"(?:[^"\\\\\\n]|\\\\.)*"');
 const CROSS_CALL = re('\\.\\s*Cross\\s*\\(');
 const CROSS_MSG = 'calls vector.Cross(), which 1.30.164078 added and 1.30.164200 removed again: the module does not ' +
@@ -245,93 +244,126 @@ export function makeScanner(vanilla) {
   const B = toIndex(vanilla.stable);
   const ALL130 = names(B);
 
-  // types 1.30 declares only under #ifdef WORKBENCH (left out of the stable index): their own check
-  const WB_ONLY = new Set((vanilla.workbench || {}).stable || []);
-  const REMOVED_CLASSES = new Set([...A.keys()].filter((c) => !B.has(c) && !WB_ONLY.has(c)));
+  const STABLE_DEFS = definesFor(vanilla.versions.stable);
+  const WB_GAME = { ...STABLE_DEFS, WORKBENCH: false };
+  const extras = (role) => Object.fromEntries(['workbench', 'obsolete', 'obsoleteDefs', 'obsoleteCalls', 'obsoleteUse'].map((k) => [k, (vanilla[k] || {})[role]]));
+  const isPublic = (s) => (s.access || 'public') === 'public';
+  const obsFits = (d, call) => sigFits(call, d.params, d.req);
 
-  const CHILDREN = new Map();
-  for (const [cn, c] of B) {
-    if (c.base) {
-      if (!CHILDREN.has(c.base)) CHILDREN.set(c.base, []);
-      CHILDREN.get(c.base).push(cn);
-    }
-  }
-  const descendants = (cn) => {
-    const out = [];
-    const todo = [cn];
-    const seen = new Set();
-    while (todo.length) {
-      const x = todo.pop();
-      for (const ch of CHILDREN.get(x) || []) {
-        if (!seen.has(ch)) {
-          seen.add(ch);
-          out.push(ch);
-          todo.push(ch);
-        }
+  // What changed from one vanilla build (old) to the next (neu); messages name the new one by label.
+  function makeDelta(old, neu, ex, label, keepClasses = new Set(), oldObsolete = null) {
+    const d = { old, new: neu, label };
+    // classes neu declares only for Workbench: gone for game scripts, not for Workbench-only folders
+    d.wbOnly = new Set(ex.workbench || []);
+    d.onlyNewObsolete = oldObsolete !== null;
+    d.allNew = names(neu);
+    d.removedClasses = new Set([...old.keys()].filter((c) => !neu.has(c) && !keepClasses.has(c)));
+    const children = new Map();
+    for (const [cn, c] of neu) {
+      if (c.base) {
+        if (!children.has(c.base)) children.set(c.base, []);
+        children.get(c.base).push(cn);
       }
     }
-    return out;
+    d.descendants = (cn) => {
+      const out = [];
+      const todo = [cn];
+      const seen = new Set();
+      while (todo.length) {
+        const x = todo.pop();
+        for (const ch of children.get(x) || []) {
+          if (!seen.has(ch)) {
+            seen.add(ch);
+            out.push(ch);
+            todo.push(ch);
+          }
+        }
+      }
+      return out;
+    };
+    // vanilla added m to cn (a mod method of that name on an ancestor or descendant now collides)
+    d.added = (cn, m) => neu.has(cn) && neu.get(cn).methods.has(m) && !(old.has(cn) && old.get(cn).methods.has(m));
+    const lower = new Map([...neu.keys()].map((cn) => [cn.toLowerCase(), cn]));
+    const isSubtype = (sub, sup) => sub === sup || (lower.has(sub) && chain(neu, lower.get(sub)).some((x) => x.toLowerCase() === sup));
+    // Vanilla's new cn.m() is a valid override of the mod's m(): same parameters, and its return
+    // type is the mod's or a subclass of it (Code Lock's ItemBase GetCodeLock() vs 1.30's
+    // DigitalCodeLock Fence.GetCodeLock() compiles, measured 2026-10-08).
+    d.overridesCleanly = (cn, m, ovs) => neu.get(cn).methods.get(m).every((v) => ovs.some((o) => sig(o) === sig(v) && isSubtype(v.ret, o.ret)));
+    d.removedMembers = new Map();
+    for (const [cn, c] of old) {
+      if (!neu.has(cn)) continue;
+      for (const m of c.methods.keys()) {
+        if (findMethod(neu, cn, m)[0] === null && !d.allNew.has(m) && !d.removedMembers.has(m)) d.removedMembers.set(m, cn + '.' + m + '()');
+      }
+      for (const f of c.fields) {
+        if (!hasField(neu, cn, f) && !d.allNew.has(f) && !d.removedMembers.has(f)) d.removedMembers.set(f, cn + '.' + f);
+      }
+    }
+    // public in old, protected/private in neu, where no new class keeps a public one of that name
+    const pub = new Set();
+    for (const c of neu.values()) for (const [m, ss] of c.methods) if (ss.some(isPublic)) pub.add(m);
+    d.nowProtected = new Map();
+    for (const [cn, c] of old) {
+      for (const [m, ss] of c.methods) {
+        const sn = neu.has(cn) ? neu.get(cn).methods.get(m) : undefined;
+        if (sn && sn.length && !pub.has(m) && ss.some(isPublic) && !d.nowProtected.has(m)) d.nowProtected.set(m, cn + '.' + m + '()');
+      }
+    }
+    const was = new Set(oldObsolete || []);
+    d.obsolete = new Set((ex.obsolete || []).filter((m) => !was.has(m)));
+    d.obsDefs = ex.obsoleteDefs || {};
+    // argument types vanilla still calls each obsolete name with ('' = unknown), calls that fit a current overload left out
+    const obsCalls = new Map(Object.entries(ex.obsoleteCalls || {}));
+    // methods an obsolete method's message says to use instead ("1.30: use Transport.NeedElectricitySourceDevice")
+    d.obsUse = ex.obsoleteUse || {};
+    d.liveSigs = new Map();
+    d.liveClass = new Map();
+    for (const cn of [...neu.keys()].sort()) {
+      for (const [m, ss] of neu.get(cn).methods) {
+        if (!d.obsolete.has(m)) continue;
+        if (!d.liveSigs.has(m)) d.liveSigs.set(m, []);
+        const live = ss.filter((s) => !s.obsolete).map((s) => s.params);
+        d.liveSigs.get(m).push(...live);
+        if (live.length && !d.liveClass.has(m)) d.liveClass.set(m, cn);
+      }
+    }
+    d.obsCalled = (key, params) => {
+      const all = d.obsDefs[key] || [];
+      const same = all.filter((x) => JSON.stringify(x.params) === JSON.stringify(params));
+      const count = all.filter((x) => x.n === params.length);
+      const ds = same.length ? same : count.length ? count : all;
+      const calls = obsCalls.get(key.split('.')[1]) || [];
+      return !ds.length || ds.some((x) => calls.some((c) => obsFits(x, c)));
+    };
+    return d;
+  }
+
+  const ver = (s) => (s.match(/\d+/g) || []).slice(0, 3).map(Number);
+  const newer = (a, b) => {
+    const x = ver(a);
+    const y = ver(b);
+    for (let k = 0; k < 3; k++) if ((x[k] || 0) !== (y[k] || 0)) return (x[k] || 0) > (y[k] || 0);
+    return false;
   };
-  const addedIn130 = (cn, m) => B.has(cn) && B.get(cn).methods.has(m) && !(A.has(cn) && A.get(cn).methods.has(m));
-  const LOWER130 = new Map([...B.keys()].map((cn) => [cn.toLowerCase(), cn]));
-  const isSubtype = (sub, sup) => sub === sup || (LOWER130.has(sub) && chain(B, LOWER130.get(sub)).some((x) => x.toLowerCase() === sup));
-  // Vanilla's new cn.m() is a valid override of the mod's m(): same parameters, and its return
-  // type is the mod's or a subclass of it (Code Lock's ItemBase GetCodeLock() vs 1.30's
-  // DigitalCodeLock Fence.GetCodeLock() compiles, measured 2026-10-08).
-  const overridesCleanly = (cn, m, ovs) => B.get(cn).methods.get(m).every((v) => ovs.some((o) => sig(o) === sig(v) && isSubtype(v.ret, o.ret)));
-
-  const REMOVED_MEMBERS = new Map();
-  for (const [cn, c] of A) {
-    if (!B.has(cn)) continue;
-    for (const m of c.methods.keys()) {
-      if (findMethod(B, cn, m)[0] === null && !ALL130.has(m) && !REMOVED_MEMBERS.has(m)) REMOVED_MEMBERS.set(m, cn + '.' + m + '()');
-    }
-    for (const f of c.fields) {
-      if (!hasField(B, cn, f) && !ALL130.has(f) && !REMOVED_MEMBERS.has(f)) REMOVED_MEMBERS.set(f, cn + '.' + f);
-    }
-  }
-
-  const isPublic = (s) => (s.access || 'public') === 'public';
-  const PUBLIC130 = new Set();
-  for (const c of B.values()) for (const [m, ss] of c.methods) if (ss.some(isPublic)) PUBLIC130.add(m);
-  const NOW_PROTECTED = new Map();
-  for (const [cn, c] of A) {
-    for (const [m, ss] of c.methods) {
-      const s30 = B.has(cn) ? B.get(cn).methods.get(m) : undefined;
-      if (s30 && s30.length && !PUBLIC130.has(m) && ss.some(isPublic) && !NOW_PROTECTED.has(m)) NOW_PROTECTED.set(m, cn + '.' + m + '()');
-    }
-  }
-  const OBSOLETE = new Set(vanilla.obsolete.stable);
-  const OBS_DEFS = (vanilla.obsoleteDefs || {}).stable || {};
-  // argument types vanilla still calls each obsolete name with ('' = unknown), calls that fit a current overload left out
-  const OBS_CALLS = new Map(Object.entries((vanilla.obsoleteCalls || {}).stable || {}));
-  // methods an obsolete method's message says to use instead ("1.30: use Transport.NeedElectricitySourceDevice")
-  const OBS_USE = (vanilla.obsoleteUse || {}).stable || {};
-  const LIVE_SIGS = new Map();
-  const LIVE_CLASS = new Map();
-  for (const cn of [...B.keys()].sort()) {
-    for (const [m, ss] of B.get(cn).methods) {
-      if (!OBSOLETE.has(m)) continue;
-      if (!LIVE_SIGS.has(m)) LIVE_SIGS.set(m, []);
-      const live = ss.filter((s) => !s.obsolete).map((s) => s.params);
-      LIVE_SIGS.get(m).push(...live);
-      if (live.length && !LIVE_CLASS.has(m)) LIVE_CLASS.set(m, cn);
-    }
-  }
+  // types stable declares only under #ifdef WORKBENCH (left out of its index): their own check
+  const WB_ONLY = new Set((vanilla.workbench || {}).stable || []);
+  const STABLE = makeDelta(A, B, extras('stable'), vanilla.versions.stable.split('.').slice(0, 2).join('.'), WB_ONLY);
+  const EXP = vanilla.exp && newer(vanilla.versions.exp, vanilla.versions.stable)
+    ? makeDelta(B, toIndex(vanilla.exp), extras('exp'), 'Exp ' + vanilla.versions.exp, new Set(), (vanilla.obsolete || {}).stable || [])
+    : null;
+  const EXP_DEFS = EXP ? definesFor(vanilla.versions.exp) : null;
+  const sameDefs = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+  const PASSES = EXP ? ['stable', 'exp'] : ['stable'];
+  const LEVELS_ALL = EXP ? [...LEVELS, 'BREAK_EXP', 'RISK_EXP', 'INFO_EXP'] : LEVELS;
   const OBS_NOTED = new Set(['OnCEUpdate', 'CreateFrontLight', 'CreateRearLight', 'GetNoiseReduction', 'GetNoiseReductionByWeather']);
-  const obsFits = (d, call) => sigFits(call, d.params, d.req);
-  const obsCalled = (key, params) => {
-    const all = OBS_DEFS[key] || [];
-    const same = all.filter((d) => JSON.stringify(d.params) === JSON.stringify(params));
-    const count = all.filter((d) => d.n === params.length);
-    const ds = same.length ? same : count.length ? count : all;
-    const calls = OBS_CALLS.get(key.split('.')[1]) || [];
-    return !ds.length || ds.some((d) => calls.some((c) => obsFits(d, c)));
-  };
 
   function load(text) {
     const out = { raw: text };
-    for (const [tag, defs] of [['stable', V130]]) {
+    for (const [tag, defs] of EXP ? [['stable', STABLE_DEFS], ['exp', EXP_DEFS]] : [['stable', STABLE_DEFS]]) {
+      if (tag === 'exp' && sameDefs(defs, STABLE_DEFS)) {
+        out.exp = out.stable;
+        continue;
+      }
       const src = preprocess(nocomment(text), defs);
       let cls;
       try {
@@ -346,7 +378,7 @@ export function makeScanner(vanilla) {
 
   function ownClasses(parsed) {
     const out = new Map();
-    for (const p of parsed) for (const tag of ['stable']) for (const c of p.load[tag][1]) if (!c.modded && !out.has(c.name)) out.set(c.name, c);
+    for (const p of parsed) for (const tag of PASSES) for (const c of p.load[tag][1]) if (!c.modded && !out.has(c.name)) out.set(c.name, c);
     return out;
   }
 
@@ -364,7 +396,7 @@ export function makeScanner(vanilla) {
   const anyOverride = (ovs) => ovs.some((o) => o.override);
 
   // [["Class.t", declared type]] for every x.t() call whose x has a declared type; empty if any call can't be resolved.
-  function receivers(body, t, modclasses) {
+  function receivers(body, t, modclasses, ix) {
     const out = new Map();
     for (const m of finditer(re('(\\.\\s*)?\\b(\\w+)\\s*\\.\\s*' + t + '\\s*\\('), body)) {
       if (m[1] !== undefined) return [];
@@ -375,16 +407,112 @@ export function makeScanner(vanilla) {
           break;
         }
       }
-      const vc = B.has(typ) ? typ : modclasses.has(typ) ? vanillaBase(modclasses.get(typ), modclasses, B) : null;
-      const cls = vc ? findMethod(B, vc, t)[0] : null;
+      const vc = ix.has(typ) ? typ : modclasses.has(typ) ? vanillaBase(modclasses.get(typ), modclasses, ix) : null;
+      const cls = vc ? findMethod(ix, vc, t)[0] : null;
       if (!cls) return [];
       out.set(cls + '.' + t + '\0' + typ, [cls + '.' + t, typ]);
     }
     return [...out.values()];
   }
 
+  // Checks that follow from the vanilla diff vd, on what a server of vd's new build compiles from this file.
+  function diffChecks(vd, rel, src, cls, modclasses, modOwn, modOverrides, add) {
+    for (const c of cls) {
+      const name = c.name;
+      if (c.modded) {
+        if (vd.removedClasses.has(name)) add('BREAK', 'modded class of class removed in ' + vd.label + ': ' + name, rel);
+      } else if (vd.removedClasses.has(c.base)) add('BREAK', 'class extends class removed in ' + vd.label + ': ' + c.base, rel + ' (' + name + ')');
+      const vbase = vanillaBase(c, modclasses, vd.old);
+      if (vbase && vd.new.has(vbase)) {
+        // vanilla method new in vd.new with the same name as one this mod adds (no override)
+        for (const [mn, ovs] of c.methods) {
+          if (anyOverride(ovs) || mn === name || mn === vbase || mn.startsWith('~')) continue;
+          const anc = chain(vd.new, vbase).filter((x) => vd.added(x, mn));
+          const desc = c.modded ? vd.descendants(vbase).filter((x) => vd.added(x, mn) && !vd.overridesCleanly(x, mn, ovs)) : [];
+          if (anc.length) add('BREAK', `adds ${name}.${mn}(), but ${vd.label} vanilla now defines ${mn}() in ${anc[0]} (name clash)`, rel);
+          else if (desc.length) add('BREAK', `adds ${mn}() to every ${name}, but ${vd.label} vanilla now defines ${mn}() in subclass ${desc.slice(0, 3).join(', ')} (name clash)`, rel);
+        }
+      }
+      if (!vbase || !vd.old.has(vbase)) continue;
+      for (const [mn, ovs] of c.methods) {
+        for (const ov of ovs) {
+          if (!ov.override) continue;
+          const [vc, ms29] = findMethod(vd.old, vbase, mn);
+          if (!vc) continue;
+          const s = sig(ov);
+          if (!sigs(ms29).has(s)) continue; // mod didn't match the old build either; skip
+          const [vc30, ms30] = findMethod(vd.new, vd.new.has(vbase) ? vbase : vc, mn);
+          if (!vc30) add('BREAK', 'overrides ' + vc + '.' + mn + '() which no longer exists in ' + vd.label, rel);
+          else if (!sigs(ms30).has(s)) {
+            add('BREAK', 'override signature changed: ' + vc30 + '.' + mn + '(' + ov.params.join(', ') + ') is now ' + ms30.map(paramList).join(' | '), rel);
+          } else {
+            const r29 = new Set(ms29.filter((m) => sig(m) === s).map((m) => m.ret));
+            const r30 = new Set(ms30.filter((m) => sig(m) === s).map((m) => m.ret));
+            if (r29.size && r30.size && ![...r29].some((r) => r30.has(r))) {
+              add('BREAK', 'override return type changed: ' + vc30 + '.' + mn + ' ' + [...r29].sort().join('/') + ' -> ' + [...r30].sort().join('/'), rel);
+            }
+            if (!OBS_NOTED.has(mn) && ms30.some((m) => m.obsolete && sig(m) === s) && !(vd.onlyNewObsolete && ms29.some((m) => m.obsolete && sig(m) === s))) {
+              const live30 = new Set(ms30.filter((m) => !m.obsolete).map(sig));
+              const also = ovs.filter((o) => o.override && live30.has(sig(o)));
+              const repl = (vd.obsUse[mn] || []).filter((u) => u !== mn && (c.methods.get(u) || []).some((o) => o.override));
+              const what = 'overrides ' + vc30 + '.' + mn + '(' + ov.params.join(', ') + '), marked [Obsolete] in ' + vd.label;
+              if (also.length) add('INFO', what + '; the same class also overrides the current (' + also[0].params.join(', ') + ') version, so nothing is lost', rel);
+              else if (repl.length) add('INFO', what + '; the same class also overrides ' + repl[0] + '(), its ' + vd.label + ' replacement, so nothing is lost', rel);
+              else if (vd.obsCalled(vc30 + '.' + mn, ov.params)) add('INFO', what, rel);
+              else add('RISK', what + ' and never called by ' + vd.label + ' vanilla: the override does not run', rel);
+            }
+          }
+        }
+      }
+    }
+    const body = strip(src);
+    const own = new Set([...modclasses.keys(), ...modOwn]);
+    for (const c of cls) {
+      for (const m of c.methods.keys()) own.add(m);
+      for (const f of c.fields) own.add(f);
+    }
+    const toks = new Set(findall(IDENT, body));
+    for (const t of toks) {
+      if (vd.removedMembers.has(t)) {
+        if (!(GENERIC.has(t) && !search(GENERIC.get(t), body)) && !own.has(t)) add('RISK', 'uses ' + vd.removedMembers.get(t) + ', removed in ' + vd.label, rel);
+      }
+      if (vd.removedClasses.has(t) && !(vd.wbOnly.has(t) && (!moduleRank(rel) || search(WORKBENCH_DIR, rel)))) {
+        if (!(GENERIC.has(t) && !search(GENERIC.get(t), body)) && !own.has(t)) add('RISK', 'uses class ' + t + ', removed in ' + vd.label, rel);
+      }
+      if (vd.obsolete.has(t) && !own.has(t)) {
+        const live = vd.liveSigs.get(t) || [];
+        let calls = callTypes(body, t);
+        const mine = Object.entries(vd.obsDefs).filter(([k]) => k.split('.')[1] === t).flatMap(([, v]) => v);
+        // calls that only fit a current overload don't count
+        if (mine.length) calls = calls.filter((c) => mine.some((d) => obsFits(d, c)));
+        const ar = calls.filter((c) => !live.some((p) => sigFits(c, p, p.length)));
+        const ds = mine.filter((d) => ar.some((c) => obsFits(d, c)));
+        if (calls.length && !ar.length) {
+          const reach = receivers(body, t, modclasses, vd.new);
+          if (reach.length && reach.every(([k]) => k in vd.obsDefs) && !reach.every(([k]) => vd.obsDefs[k].every((d) => d.stub))) {
+            const [k, typ] = reach.sort((x, y) => (x[0] + '\0' + x[1] < y[0] + '\0' + y[1] ? -1 : 1))[0];
+            add('INFO', 'calls ' + k + '() on a ' + typ + ': [Obsolete] in ' + vd.label + ' but still there, so it works (compile warning)', rel);
+          } else if (!(reach.length && !reach.some(([k]) => k in vd.obsDefs))) {
+            const obs = Object.keys(vd.obsDefs).filter((k) => k.split('.')[1] === t).sort();
+            add('INFO', 'calls ' + t + '(): ' + obs.join(', ') + '() is [Obsolete] in ' + vd.label + ' but ' + vd.liveClass.get(t) + '.' + t + '() is not; check which one this call reaches', rel);
+          }
+        } else if (calls.length && ds.length && ds.every((d) => d.stub) && !modOverrides.has(t)) {
+          add('RISK', 'calls ' + t + '(), which ' + vd.label + ' left as a placeholder (empty, or returns a fixed value): it compiles but does nothing', rel);
+        } else if (calls.length) add('INFO', 'calls ' + t + '() marked [Obsolete] in ' + vd.label, rel);
+      }
+      if (vd.nowProtected.has(t) && !own.has(t)) {
+        for (const m of finditer(re('(\\w+)\\s*\\.\\s*' + t + '\\s*\\('), body)) {
+          if (m[1] !== 'super' && m[1] !== 'this') {
+            add('RISK', 'calls ' + vd.nowProtected.get(t) + ' from outside the class; ' + vd.label + ' made it protected (unverified whether that compiles)', rel);
+            break;
+          }
+        }
+      }
+    }
+  }
+
   function scanFiles(files) {
-    const res = Object.fromEntries(LEVELS.map((l) => [l, {}]));
+    const res = Object.fromEntries(LEVELS_ALL.map((l) => [l, {}]));
     const add = (level, msg, where) => {
       if (!res[level][msg]) res[level][msg] = [];
       if (res[level][msg].length < 100000) res[level][msg].push(where);
@@ -395,7 +523,7 @@ export function makeScanner(vanilla) {
     const modOwn = new Set();
     const modOverrides = new Set(); // a call to one of these may reach the mod's own body
     for (const p of parsed) {
-      for (const tag of ['stable']) {
+      for (const tag of PASSES) {
         for (const c of p.load[tag][1]) {
           for (const [mn, ovs] of c.methods) {
             if (!anyOverride(ovs)) modOwn.add(mn);
@@ -435,100 +563,11 @@ export function makeScanner(vanilla) {
         }
       }
 
-      // ---- 1.30: what a 1.30 server compiles from this file
-      for (const c of cls) {
-        const name = c.name;
-        if (c.modded) {
-          if (REMOVED_CLASSES.has(name)) add('BREAK', 'modded class of class removed in 1.30: ' + name, rel);
-        } else if (REMOVED_CLASSES.has(c.base)) add('BREAK', 'class extends class removed in 1.30: ' + c.base, rel + ' (' + name + ')');
-        const vbase = vanillaBase(c, modclasses, A);
-        if (vbase && B.has(vbase)) {
-          // new-in-1.30 vanilla method with the same name as one this mod adds (no override)
-          for (const [mn, ovs] of c.methods) {
-            if (anyOverride(ovs) || mn === name || mn === vbase || mn.startsWith('~')) continue;
-            const anc = chain(B, vbase).filter((x) => addedIn130(x, mn));
-            const desc = c.modded ? descendants(vbase).filter((x) => addedIn130(x, mn) && !overridesCleanly(x, mn, ovs)) : [];
-            if (anc.length) add('BREAK', `adds ${name}.${mn}(), but 1.30 vanilla now defines ${mn}() in ${anc[0]} (name clash)`, rel);
-            else if (desc.length) add('BREAK', `adds ${mn}() to every ${name}, but 1.30 vanilla now defines ${mn}() in subclass ${desc.slice(0, 3).join(', ')} (name clash)`, rel);
-          }
-        }
-        if (!vbase || !A.has(vbase)) continue;
-        for (const [mn, ovs] of c.methods) {
-          for (const ov of ovs) {
-            if (!ov.override) continue;
-            const [vc, ms29] = findMethod(A, vbase, mn);
-            if (!vc) continue;
-            const s = sig(ov);
-            if (!sigs(ms29).has(s)) continue; // mod didn't match 1.29 either; skip
-            const [vc30, ms30] = findMethod(B, B.has(vbase) ? vbase : vc, mn);
-            if (!vc30) add('BREAK', 'overrides ' + vc + '.' + mn + '() which no longer exists in 1.30', rel);
-            else if (!sigs(ms30).has(s)) {
-              add('BREAK', 'override signature changed: ' + vc30 + '.' + mn + '(' + ov.params.join(', ') + ') is now ' + ms30.map(paramList).join(' | '), rel);
-            } else {
-              const r29 = new Set(ms29.filter((m) => sig(m) === s).map((m) => m.ret));
-              const r30 = new Set(ms30.filter((m) => sig(m) === s).map((m) => m.ret));
-              if (r29.size && r30.size && ![...r29].some((r) => r30.has(r))) {
-                add('BREAK', 'override return type changed: ' + vc30 + '.' + mn + ' ' + [...r29].sort().join('/') + ' -> ' + [...r30].sort().join('/'), rel);
-              }
-              if (!OBS_NOTED.has(mn) && ms30.some((m) => m.obsolete && sig(m) === s)) {
-                const live30 = new Set(ms30.filter((m) => !m.obsolete).map(sig));
-                const also = ovs.filter((o) => o.override && live30.has(sig(o)));
-                const repl = (OBS_USE[mn] || []).filter((u) => u !== mn && (c.methods.get(u) || []).some((o) => o.override));
-                const what = 'overrides ' + vc30 + '.' + mn + '(' + ov.params.join(', ') + '), marked [Obsolete] in 1.30';
-                if (also.length) add('INFO', what + '; the same class also overrides the current (' + also[0].params.join(', ') + ') version, so nothing is lost', rel);
-                else if (repl.length) add('INFO', what + '; the same class also overrides ' + repl[0] + '(), its 1.30 replacement, so nothing is lost', rel);
-                else if (obsCalled(vc30 + '.' + mn, ov.params)) add('INFO', what, rel);
-                else add('RISK', what + ' and never called by 1.30 vanilla: the override does not run', rel);
-              }
-            }
-          }
-        }
+      diffChecks(STABLE, rel, src30, cls, modclasses, modOwn, modOverrides, add);
+      if (EXP) {
+        const [srcExp, clsExp] = p.load.exp;
+        diffChecks(EXP, rel, srcExp, clsExp, modclasses, modOwn, modOverrides, (lv, msg, where) => add(lv + '_EXP', msg, where));
       }
-      const body = strip(src30);
-      const own = new Set([...modclasses.keys(), ...modOwn]);
-      for (const c of cls) {
-        for (const m of c.methods.keys()) own.add(m);
-        for (const f of c.fields) own.add(f);
-      }
-      const toks = new Set(findall(IDENT, body));
-      for (const t of toks) {
-        if (REMOVED_MEMBERS.has(t)) {
-          if (!(GENERIC.has(t) && !search(GENERIC.get(t), body)) && !own.has(t)) add('RISK', 'uses ' + REMOVED_MEMBERS.get(t) + ', removed in 1.30', rel);
-        }
-        if (REMOVED_CLASSES.has(t)) {
-          if (!(GENERIC.has(t) && !search(GENERIC.get(t), body)) && !own.has(t)) add('RISK', 'uses class ' + t + ', removed in 1.30', rel);
-        }
-        if (OBSOLETE.has(t) && !own.has(t)) {
-          const live = LIVE_SIGS.get(t) || [];
-          let calls = callTypes(body, t);
-          const mine = Object.entries(OBS_DEFS).filter(([k]) => k.split('.')[1] === t).flatMap(([, v]) => v);
-          // calls that only fit a current overload don't count
-          if (mine.length) calls = calls.filter((c) => mine.some((d) => obsFits(d, c)));
-          const ar = calls.filter((c) => !live.some((p) => sigFits(c, p, p.length)));
-          const ds = mine.filter((d) => ar.some((c) => obsFits(d, c)));
-          if (calls.length && !ar.length) {
-            const reach = receivers(body, t, modclasses);
-            if (reach.length && reach.every(([k]) => k in OBS_DEFS) && !reach.every(([k]) => OBS_DEFS[k].every((d) => d.stub))) {
-              const [k, typ] = reach.sort((x, y) => (x[0] + '\0' + x[1] < y[0] + '\0' + y[1] ? -1 : 1))[0];
-              add('INFO', 'calls ' + k + '() on a ' + typ + ': [Obsolete] in 1.30 but still there, so it works (compile warning)', rel);
-            } else if (!(reach.length && !reach.some(([k]) => k in OBS_DEFS))) {
-              const obs = Object.keys(OBS_DEFS).filter((k) => k.split('.')[1] === t).sort();
-              add('INFO', 'calls ' + t + '(): ' + obs.join(', ') + '() is [Obsolete] in 1.30 but ' + LIVE_CLASS.get(t) + '.' + t + '() is not; check which one this call reaches', rel);
-            }
-          } else if (calls.length && ds.length && ds.every((d) => d.stub) && !modOverrides.has(t)) {
-            add('RISK', 'calls ' + t + '(), which 1.30 left as a placeholder (empty, or returns a fixed value): it compiles but does nothing', rel);
-          } else if (calls.length) add('INFO', 'calls ' + t + '() marked [Obsolete] in 1.30', rel);
-        }
-        if (NOW_PROTECTED.has(t) && !own.has(t)) {
-          for (const m of finditer(re('(\\w+)\\s*\\.\\s*' + t + '\\s*\\('), body)) {
-            if (m[1] !== 'super' && m[1] !== 'this') {
-              add('RISK', 'calls ' + NOW_PROTECTED.get(t) + ' from outside the class; 1.30 made it protected (unverified whether that compiles)', rel);
-              break;
-            }
-          }
-        }
-      }
-
     }
     return res;
   }
@@ -646,7 +685,7 @@ export function makeScanner(vanilla) {
     const report = {};
     mods.forEach((m, k) => {
       if (progress) progress(k, mods.length, m.mod);
-      const r = m.files.length ? scanFiles(m.files) : Object.fromEntries(LEVELS.map((l) => [l, {}]));
+      const r = m.files.length ? scanFiles(m.files) : Object.fromEntries(LEVELS_ALL.map((l) => [l, {}]));
       for (const sp of m.scriptPaths) {
         if (isScriptPath(sp)) {
           const where = sp.pbo + ': ' + sp.module + ' = ' + sp.path;
@@ -675,8 +714,8 @@ export function makeScanner(vanilla) {
 
   return {
     scan,
-    stats: { removedClasses: REMOVED_CLASSES.size, removedMembers: REMOVED_MEMBERS.size, obsolete: OBSOLETE.size,
-      nowProtected: NOW_PROTECTED.size },
+    stats: { removedClasses: STABLE.removedClasses.size, removedMembers: STABLE.removedMembers.size, obsolete: STABLE.obsolete.size,
+      nowProtected: STABLE.nowProtected.size },
     versions: vanilla.versions || {},
   };
 }

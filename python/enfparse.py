@@ -110,6 +110,12 @@ def preprocess(src, defines):
 V130 = {'DAYZ_1_29': False, 'DAYZ_1_30': True}
 
 
+def defines_for(version):
+    """The version defines a build sets: its own DAYZ_<major>_<minor>; the neighbouring ones are off."""
+    major, minor = (int(x) for x in version.split('.')[:2])
+    return {'DAYZ_%d_%d' % (major, n): n == minor for n in range(max(0, minor - 9), minor + 10)}
+
+
 def split_top(s):
     parts = []
     d = 0

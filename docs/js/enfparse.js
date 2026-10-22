@@ -115,6 +115,14 @@ export function preprocess(src, defines) {
 
 export const V130 = { DAYZ_1_29: false, DAYZ_1_30: true };
 
+// The version defines a build sets: its own DAYZ_<major>_<minor>; the neighbouring ones are off.
+export function definesFor(version) {
+  const [major, minor] = version.split('.').slice(0, 2).map(Number);
+  const out = {};
+  for (let n = Math.max(0, minor - 9); n < minor + 10; n++) out['DAYZ_' + major + '_' + n] = n === minor;
+  return out;
+}
+
 export function splitTop(s) {
   const parts = [];
   let d = 0;
