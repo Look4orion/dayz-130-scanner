@@ -112,6 +112,16 @@ def test_exp_skips_workbench_only_folder():
     assert any('Workbench' in m for m in r['RISK_EXP']), r
 
 
+def test_version_gate_follows_stable():
+    v = json.load(open(VANILLA))
+    v['versions']['stable'] = '1.31.1'
+    p = os.path.join(tempfile.mkdtemp(), 'v.json')
+    json.dump(v, open(p, 'w'))
+    r = scan('#ifdef DAYZ_1_31\nclass G {};\n#endif\n#ifdef DAYZ_1_30\nclass H {};\n#endif\n', p)
+    msgs = [m for m in r['RISK'] if 'switches the code off again' in m]
+    assert msgs == ['#ifdef DAYZ_1_31 switches the code off again on 1.32 (use #ifndef DAYZ_1_30)'], r['RISK']
+
+
 if __name__ == '__main__':
     for n, f in list(globals().items()):
         if n.startswith('test_'):

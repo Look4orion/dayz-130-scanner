@@ -6,8 +6,8 @@
 <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: https://rook1969.goatcounter.com; connect-src 'self'; worker-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'">
 <title>DayZ Mod Scanner</title>
 <meta name="description" content="Check DayZ mods for known breaking changes on the current stable and the next experimental version. Runs in your browser; your files are never uploaded.">
-<link rel="stylesheet" href="style.css?v=202610220333">
-<script type="module" src="js/app.js?v=202610220333"></script>
+<link rel="stylesheet" href="style.css?v=202610220345">
+<script type="module" src="js/app.js?v=202610220345"></script>
 </head>
 <body>
 <main>
@@ -41,8 +41,8 @@
       <dd>Uses something 1.30 removed or changed, where the scanner can't tell for sure from the name alone: menus taking global input focus with <code>ChangeGameFocus</code> (no device), script folders written with backslashes whose code nothing else needs (it still compiles, but what they do is lost), backslash script paths into another mod's folder used for optional support (<code>#ifdef</code>), methods 1.30 made protected, version gates like <code>#ifdef DAYZ_1_30</code> that switch off again on 1.31, version gates in <code>1_Core</code> scripts (the version defines aren't set there yet, so they always take the "not defined" branch), overrides of obsolete methods 1.30 no longer calls (they compile but never run), calls to obsolete methods 1.30 left empty (they do nothing).</dd>
       <dt><span class="pill info">info</span> Good to know</dt>
       <dd>Still works, but behaves differently on 1.30: <code>CreateInInventory</code> refusing items that don't fit, obsolete methods 1.30 still calls, overrides of obsolete methods whose replacement the mod also overrides, car headlight overrides 1.30 no longer calls, backslash script folders that are empty or hold only empty classes.</dd>
-      <dt><span class="pill break">exp</span> On the experimental build</dt>
-      <dd>While Bohemia has an experimental build open that is newer than stable, results also get "exp" grades (break, risk and info, as above) for what that build changes compared with stable: overrides of methods it removes or changes, names it adds that clash with the mod's methods, classes and members it removes, and methods it newly marks obsolete. With no newer experimental build open, results are for stable only.</dd>
+      <dt id="exp-legend-term" hidden><span class="pill break">exp</span> On the experimental build</dt>
+      <dd id="exp-legend-text" hidden>While Bohemia has an experimental build open that is newer than stable, results also get "exp" grades (break, risk and info, as above) for what that build changes compared with stable: overrides of methods it removes or changes, names it adds that clash with the mod's methods, classes and members it removes, and methods it newly marks obsolete. With no newer experimental build open, results are for stable only.</dd>
     </dl>
     <h2>What it can't tell you</h2>
     <ul>

@@ -173,9 +173,16 @@ PATTERNS = [
     ('INFO', 'CreateInInventory now refuses items that do not fit (no log line)', re.compile(r'\bCreateInInventory\s*\(')),
     ('INFO', 'Fill() lands a frame late on 1.30', re.compile(r'\.\s*Fill\s*\(\s*CarFluid')),
 ]
+def gate_rule(major, minor):
+    """#ifdef on stable's own version define: the code is off again on the next build."""
+    d = 'DAYZ_%d_%d' % (major, minor)
+    msg = '#ifdef %s switches the code off again on %d.%d (use #ifndef DAYZ_%d_%d)' % (d, major, minor + 1, major, minor - 1)
+    return ('RISK', msg, re.compile(r'^\s*#\s*if(?:n?def)?\s+(?:defined\s*\(?\s*)?' + d + r'\b', re.M))
+
+
 # Matched against the whole file (directives included).
 RAW_PATTERNS = [
-    ('RISK', '#ifdef DAYZ_1_30 switches the code off again on 1.31 (use #ifndef DAYZ_1_29)', re.compile(r'^\s*#\s*if(?:n?def)?\s+(?:defined\s*\(?\s*)?DAYZ_1_30\b', re.M)),
+    gate_rule(*(int(x) for x in V['versions']['stable'].split('.')[:2])),
     ('RISK', 'BUILD_EXPERIMENTAL used as a version gate: it is gone on 1.30 stable', re.compile(r'^\s*#\s*if(?:n?def)?\s+(?:defined\s*\(?\s*)?BUILD_EXPERIMENTAL\b', re.M)),
 ]
 # Removed names that are also ordinary words: only count them with supporting context in the same file.

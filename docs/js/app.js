@@ -129,7 +129,7 @@ function run(groups) {
   status.textContent = 'Starting...';
   drop.classList.add('busy');
   if (worker) worker.terminate();
-  worker = new Worker(new URL('./worker.js?v=202610220333', import.meta.url), { type: 'module' });
+  worker = new Worker(new URL('./worker.js?v=202610220345', import.meta.url), { type: 'module' });
   worker.onmessage = (ev) => {
     const d = ev.data;
     if (d.type === 'progress') {
@@ -139,7 +139,10 @@ function run(groups) {
       const n = groups.length;
       const exp = Object.values(d.report).some((r) => 'BREAK_EXP' in r);
       LEVELS = levelsFor(d.versions, exp);
-      status.textContent = `Scanned ${n} mod${n === 1 ? '' : 's'} against DayZ ${d.versions.stable}` + (exp ? ` and Exp ${d.versions.exp}.` : '.');
+      status.textContent = `Scanned ${n} mod${n === 1 ? '' : 's'} against DayZ ${d.versions.stable}` +
+        (exp ? ` and Exp ${d.versions.exp}.` : ' (no newer experimental build).');
+      $('exp-legend-term').hidden = !exp;
+      $('exp-legend-text').hidden = !exp;
       lastReport = { groups, report: d.report, errors: d.errors };
       render(lastReport);
       tally({ p: 'scan', t: 'Scan', e: 'true' });

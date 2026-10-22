@@ -1,6 +1,6 @@
 // Port of python/scan130.py.
-import { re, search, finditer, findall, fullmatch, countChar, strip as pyStrip } from './pyre.js?v=202610220333';
-import { parse, strip, preprocess, nocomment, definesFor } from './enfparse.js?v=202610220333';
+import { re, search, finditer, findall, fullmatch, countChar, strip as pyStrip } from './pyre.js?v=202610220345';
+import { parse, strip, preprocess, nocomment, definesFor } from './enfparse.js?v=202610220345';
 
 const LEVELS = ['BREAK', 'RISK', 'INFO'];
 
@@ -69,7 +69,6 @@ const PATTERNS = [
 ];
 // Matched against the whole file (directives included).
 const RAW_PATTERNS = [
-  ['RISK', '#ifdef DAYZ_1_30 switches the code off again on 1.31 (use #ifndef DAYZ_1_29)', re('^\\s*#\\s*if(?:n?def)?\\s+(?:defined\\s*\\(?\\s*)?DAYZ_1_30\\b', 'M')],
   ['RISK', 'BUILD_EXPERIMENTAL used as a version gate: it is gone on 1.30 stable', re('^\\s*#\\s*if(?:n?def)?\\s+(?:defined\\s*\\(?\\s*)?BUILD_EXPERIMENTAL\\b', 'M')],
 ];
 // Removed names that are also ordinary words: only count them with supporting context in the same file.
@@ -237,7 +236,7 @@ function ownsPath(pbos, path) {
   });
 }
 
-export const CHECK_COUNTS = { patterns: PATTERNS.length + RAW_PATTERNS.length };
+export const CHECK_COUNTS = { patterns: PATTERNS.length + RAW_PATTERNS.length + 1 };
 
 export function makeScanner(vanilla) {
   const A = toIndex(vanilla.previous);
@@ -245,6 +244,11 @@ export function makeScanner(vanilla) {
   const ALL130 = names(B);
 
   const STABLE_DEFS = definesFor(vanilla.versions.stable);
+  // #ifdef on stable's own version define: the code is off again on the next build
+  const [MAJOR, MINOR] = vanilla.versions.stable.split('.').slice(0, 2).map(Number);
+  const GATE = 'DAYZ_' + MAJOR + '_' + MINOR;
+  const RAW_RULES = [['RISK', `#ifdef ${GATE} switches the code off again on ${MAJOR}.${MINOR + 1} (use #ifndef DAYZ_${MAJOR}_${MINOR - 1})`,
+    re('^\\s*#\\s*if(?:n?def)?\\s+(?:defined\\s*\\(?\\s*)?' + GATE + '\\b', 'M')], ...RAW_PATTERNS];
   const WB_GAME = { ...STABLE_DEFS, WORKBENCH: false };
   const extras = (role) => Object.fromEntries(['workbench', 'obsolete', 'obsoleteDefs', 'obsoleteCalls', 'obsoleteUse'].map((k) => [k, (vanilla[k] || {})[role]]));
   const isPublic = (s) => (s.access || 'public') === 'public';
@@ -536,7 +540,7 @@ export function makeScanner(vanilla) {
     for (const p of parsed) {
       const rel = p.rel;
       const [src30, cls] = p.load.stable;
-      for (const [level, msg, rx] of RAW_PATTERNS) for (const m of finditer(rx, p.load.raw)) add(level, msg, rel + ':' + (countChar(p.load.raw, '\n', 0, m.index) + 1));
+      for (const [level, msg, rx] of RAW_RULES) for (const m of finditer(rx, p.load.raw)) add(level, msg, rel + ':' + (countChar(p.load.raw, '\n', 0, m.index) + 1));
       if (search(CORE_DIR, rel)) for (const m of finditer(CORE_GATE, p.load.raw)) add('RISK', CORE_GATE_MSG, rel + ':' + (countChar(p.load.raw, '\n', 0, m.index) + 1));
       if (findall(IDENT, p.load.raw).some((t) => WB_ONLY.has(t)) && moduleRank(rel) && !search(WORKBENCH_DIR, rel)) {
         const seen = new Set();

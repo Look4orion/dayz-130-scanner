@@ -175,6 +175,8 @@ def main():
     elif cmd == 'rotate':
         path, root, version = args
         v = json.load(open(path))
+        if ver(version)[:2] <= ver(v['versions']['stable'])[:2]:
+            sys.exit('rotate needs a newer major.minor than stable %s, got %s (a hotfix is: set <json> stable ...)' % (v['versions']['stable'], version))
         data, extras = build(root)
         put(v, 'previous', v['stable'], {k: v[k]['stable'] for k in EXTRAS if 'stable' in v.get(k, {})}, v['versions']['stable'])
         put(v, 'stable', data, extras, version)

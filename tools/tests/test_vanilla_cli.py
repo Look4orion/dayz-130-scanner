@@ -70,6 +70,13 @@ def test_set_exp_then_rotate_then_clear():
     assert code == 0 and 'exp' not in v and 'exp' not in v['versions'] and all('exp' not in v[k] for k in EXTRAS)
 
 
+def test_rotate_refuses_same_minor():
+    p = converted()
+    code, msg = run('rotate', p, scripts(tmp(), 'class C {};'), '1.30.164300')
+    assert code != 0 and '1.30.164300' in msg, (code, msg)
+    assert json.load(open(p))['versions']['previous'] == '1.29.163709'
+
+
 if __name__ == '__main__':
     for n, f in list(globals().items()):
         if n.startswith('test_'):
