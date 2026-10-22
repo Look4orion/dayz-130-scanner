@@ -1,10 +1,10 @@
-"""Static 1.30 compatibility scan of mod scripts against the vanilla 1.29 -> 1.30 diff.
+"""Static scan of mod scripts against the vanilla diff from the previous to the current stable build.
 Usage: scan130.py vanilla.json --pbo mods.tsv <mods root> <out.json>   (reads the PBOs directly)
    or: scan130.py vanilla.json <modsrc dir> <out.json> [mods.tsv <mods root>]   (extract.py output)
 With mods.tsv and the mods root, CfgMods script paths are checked too."""
 import sys, os, json, re, glob
 sys.path.insert(0, os.path.dirname(__file__))
-from enfparse import parse, strip, preprocess, nocomment, call_args, call_types, sig_fits, V129, V130
+from enfparse import parse, strip, preprocess, nocomment, call_args, call_types, sig_fits, V130
 
 V = json.load(open(sys.argv[1]))
 A, B = V['previous'], V['stable']
@@ -51,19 +51,11 @@ def names(ix):
 
 
 # Names defined anywhere in vanilla (classes, methods, fields): a usage of these is not "removed" / "new".
-ALL129, ALL130 = names(A), names(B)
+ALL130 = names(B)
 
 # Types 1.30 declares only under #ifdef WORKBENCH (vanilla.py leaves them out of the stable index): their own check.
 WB_ONLY = set(V.get('workbench', {}).get('stable', []))
 REMOVED_CLASSES = {c for c in A if c not in B and c not in WB_ONLY}
-NEW_CLASSES = {c for c in B if c not in A}
-# Methods and fields that exist nowhere in 1.29 vanilla: code using them does not compile on 1.29
-# (unless another mod defines the name, which the scan checks).
-NEW_METHODS = {}  # name -> "Class.method()"
-for cn, c in B.items():
-    for m in c['methods']:
-        if m not in ALL129:
-            NEW_METHODS.setdefault(m, cn + '.' + m + '()')
 
 # Methods vanilla ADDED in 1.30 (name not on that class in 1.29). A mod method of the same name
 # on an ancestor or descendant now collides with it.
@@ -184,15 +176,6 @@ IDENT = re.compile(r'\b[A-Za-z_]\w*\b')
 # Only an admin's debug spawn runs these, and the parts go to attachment slots.
 SKIP_IN_DEBUG_SPAWN = {'CreateInInventory now refuses items that do not fit (no log line)'}
 DEBUG_SPAWN = re.compile(r'\bOnDebugSpawn\s*\([^)]*\)\s*\{')
-# FindFile lists $profile:/$mission: with any flags on 1.30.164200 (DZEXP-134 fixed); flags -1, the
-# 164078 workaround, lists nothing on 1.29.
-FF_129_MSG = ('FindFile with flags -1 lists nothing on 1.29, and the call has no retry '
-              '(retry with FindFileFlags.ALL when -1 finds nothing, or gate with #ifdef DAYZ_1_29)')
-FF_CALL = re.compile(r'\bFindFile\s*\(')
-MINUS_ONE = re.compile(r'-\s*1')
-FLAG_ARG = re.compile(r'(?:\w+\s*\.\s*)*(\w+)\s*(\(.*\))?', re.S)
-FUNC_HEAD = re.compile(r'\b(\w+)\s*\(([^;{}()]*)\)\s*\{')
-BLOCK_WORDS = {'if', 'while', 'for', 'foreach', 'switch', 'catch', 'return'}
 SCRIPT_PATH_MSG = ('CfgMods script path with backslashes: 1.30 compiles none of these scripts, silently, and other '
                    'loaded code uses what they declare, so the module fails to compile')
 SKIP_LOST_MSG = ('CfgMods script path with backslashes: 1.30 compiles none of these scripts, silently, so what they do is '
@@ -208,7 +191,7 @@ IFDEF = re.compile(r'^\s*#\s*ifn?def\b', re.M)
 CORE_DIR = re.compile(r'(^|/)1_core/', re.I)
 CORE_GATE = re.compile(r'^[ \t]*#[ \t]*ifn?def[ \t]+DAYZ_1_\d+\b', re.M)
 CORE_GATE_MSG = ('version gate (#ifdef/#ifndef DAYZ_1_xx) in a 1_Core script: the version defines are not set yet '
-                 'when the Core module compiles (measured on 1.29), so it always takes the "not defined" branch')
+                 'when the Core module compiles, so it always takes the "not defined" branch')
 WB_MSG = ('uses a class 1.30 declares only for Workbench (#ifdef WORKBENCH): outside an #ifdef WORKBENCH block '
           'the module does not compile ("Can\'t find variable")')
 WB_GAME = dict(V130, WORKBENCH=False)
@@ -234,105 +217,6 @@ def debug_spans(src):
     return spans
 
 
-def method_bodies(src, name):
-    out = []
-    for m in re.finditer(r'\b' + name + r'\s*\([^;{}]*\)\s*\{', src):
-        depth, i = 1, m.end()
-        while i < len(src) and depth:
-            if src[i] == '{':
-                depth += 1
-            elif src[i] == '}':
-                depth -= 1
-            i += 1
-        out.append(src[m.end():i])
-    return out
-
-
-def enclosing_function(src, heads, pos):
-    """(name, parameters, body start) of the function whose body holds src[pos], or None."""
-    for h in reversed(heads):
-        if h.end() > pos:
-            continue
-        if h.group(1) not in BLOCK_WORDS and same_block(src, h.end(), pos):
-            return h.group(1), [x.strip() for x in h.group(2).split(',')], h.end()
-    return None
-
-
-def flags_minus_one(a, modsrc, src, heads, pos, memo):
-    """A FindFile flags argument that is -1: the literal, a const or static the mod sets to -1, a
-    method of the mod that returns -1, or a variable or parameter of the calling function that the
-    function sets to -1 or that its callers pass -1 into."""
-    if a.startswith('FindFileFlags'):
-        return False
-    if MINUS_ONE.fullmatch(a):
-        return True
-    m = FLAG_ARG.fullmatch(a)
-    if not m:
-        return False
-    name = m.group(1)
-    if m.group(2) is not None:
-        if ('ret', name) not in memo:
-            memo[('ret', name)] = any(re.search(r'\breturn\s*-\s*1\s*;', b) for b in method_bodies(modsrc, name))
-        return memo[('ret', name)]
-    if ('decl', name) not in memo:
-        memo[('decl', name)] = bool(re.search(r'\b(?:const|static)\b[^;{}=()]*\b' + name + r'\s*=\s*-\s*1\s*;', modsrc))
-    if memo[('decl', name)]:
-        return True
-    if '.' in a:
-        return False
-    fn = enclosing_function(src, heads, pos)
-    if not fn:
-        return False
-    fname, params, start = fn
-    if re.search(r'\b' + name + r'\s*=\s*-\s*1\b', src[start:pos]):
-        return True
-    idx = [k for k, x in enumerate(params) if re.search(r'\b' + name + r'\s*(?:=.*)?$', x)]
-    if not idx:
-        return False
-    key = ('pass', fname, idx[0])
-    if key not in memo:
-        memo[key] = False
-        for c in re.finditer(r'\b' + fname + r'\s*\(', modsrc):
-            got = call_args(modsrc, c.end() - 1)
-            if got and len(got) > idx[0] and MINUS_ONE.fullmatch(got[idx[0]].strip()):
-                memo[key] = True
-                break
-    return memo[key]
-
-
-def findfile_hits(src, modsrc, memo):
-    """(offset, flags -1) for each FindFile call in src."""
-    out = []
-    heads = None
-    for m in FF_CALL.finditer(src):
-        args = call_args(src, m.end() - 1)
-        fixed = False
-        if args and len(args) >= 4:
-            if heads is None:
-                heads = list(FUNC_HEAD.finditer(src))
-            fixed = flags_minus_one(args[3].strip(), modsrc, src, heads, m.start(), memo)
-        out.append((m.start(), fixed))
-    return out
-
-
-def same_block(src, a, b):
-    """src[b] is in the block that holds src[a] (or deeper): the braces between never close it."""
-    depth = 0
-    for c in src[a:b]:
-        if c == '{':
-            depth += 1
-        elif c == '}':
-            depth -= 1
-            if depth < 0:
-                return False
-    return True
-
-
-def has_retry(src, hits, k):
-    """A -1 call followed by another call in the same function (1.29 gets its answer there)."""
-    return any(not fixed and same_block(src, hits[k][0], at) for at, fixed in hits[k + 1:])
-
-
 def owns_path(pbos, path):
     p = path.replace('\\', '/').strip('/').lower()
     for pb, note in pbos.items():
@@ -344,7 +228,7 @@ def owns_path(pbos, path):
 
 def load(raw):
     out = {'raw': raw}
-    for tag, defs in (('130', V130), ('129', V129)):
+    for tag, defs in (('stable', V130),):
         src = preprocess(nocomment(raw), defs)
         try:
             cls = parse(src)
@@ -358,7 +242,7 @@ def own_classes(parsed):
     """Classes the mod declares (not modded), by name."""
     out = {}
     for _, p in parsed:
-        for tag in ('130', '129'):
+        for tag in ('stable',):
             for c in p[tag][1]:
                 if not c['modded']:
                     out.setdefault(c['name'], c)
@@ -392,43 +276,8 @@ def receivers(body, t, modclasses):
     return out
 
 
-LOWER_B = {c.lower(): c for c in B}
-
-
-def receiver_class(body, m, modclasses):
-    """Vanilla 1.30 class of the receiver in a "x.t(" / "Class.t(" / "Getter().t(" match, or None."""
-    dot, name, call = m.group(1), m.group(2), m.group(3)
-    if dot and not call:
-        return None  # a.b.t(): field type unknown
-    if call:
-        rets = {s['ret'].split()[-1] for c in B.values() for s in c['methods'].get(name, []) if s['ret']}
-        return LOWER_B.get(rets.pop()) if len(rets) == 1 else None
-    if name in B:
-        return name
-    typ = next((d.group(1) for d in re.finditer(r'\b(\w+)\s+' + name + r'\s*[=;,)]', body)
-                if d.group(1) not in ('return', 'new', 'delete', 'out', 'inout', 'ref', 'autoptr')), None)
-    if typ in B:
-        return typ
-    return vanilla_base(modclasses[typ], modclasses, B) if typ in modclasses else None
-
-
-def call_classes(body, t, modclasses):
-    """Vanilla classes that define t for every t() call, or empty if any call's receiver is unknown."""
-    out, n = set(), 0
-    for m in re.finditer(r'(\.\s*)?\b(\w+)\s*(\((?:[^()]|\([^()]*\))*\))?\s*\.\s*' + t + r'\s*\(', body):
-        n += 1
-        vc = receiver_class(body, m, modclasses)
-        cls = find_method(B, vc, t)[0] if vc else None
-        if not cls:
-            return set()
-        out.add(cls)
-    if n != len(re.findall(r'\b' + t + r'\s*\(', body)):
-        return set()  # a call this didn't resolve, or a bare t() (receiver is this, possibly a mod class)
-    return out
-
-
 def scan_files(files):
-    res = {'BREAK': {}, 'RISK': {}, 'INFO': {}, 'BREAK_129': {}, 'RISK_129': {}}
+    res = {'BREAK': {}, 'RISK': {}, 'INFO': {}}
 
     def add(level, msg, where):
         res[level].setdefault(msg, [])
@@ -441,17 +290,13 @@ def scan_files(files):
     mod_own = set()
     mod_overrides = set()  # a call to one of these may reach the mod's own body
     for _, p in parsed:
-        for tag in ('130', '129'):
+        for tag in ('stable',):
             for c in p[tag][1]:
                 mod_own.update(m for m, o in c['methods'].items() if not any(v['override'] for v in o))
                 mod_overrides.update(m for m, o in c['methods'].items() if any(v['override'] for v in o))
                 mod_own.update(c['fields'])
-    mod29 = '\n'.join(p['129'][0] for _, p in parsed)
-    all29 = 'FindFileFlags.ALL' in mod29
-    memo29 = {}
     for rel, p in parsed:
-        src30, cls = p['130']
-        src29, cls29 = p['129']
+        src30, cls = p['stable']
         for level, msg, rx in RAW_PATTERNS:
             for m in rx.finditer(p['raw']):
                 add(level, msg, rel + ':' + str(p['raw'].count('\n', 0, m.start()) + 1))
@@ -476,11 +321,6 @@ def scan_files(files):
                 if msg in SKIP_IN_DEBUG_SPAWN and any(a <= m.start() < b for a, b in spans):
                     continue
                 add(level, msg, rel + ':' + str(src30.count('\n', 0, m.start()) + 1))
-        if not all29:
-            hits29 = findfile_hits(src29, mod29, memo29)
-            for k, (at, fixed) in enumerate(hits29):
-                if fixed and not has_retry(src29, hits29, k):
-                    add('RISK_129', FF_129_MSG, rel + ':' + str(src29.count('\n', 0, at) + 1))
 
         # ---- 1.30: what a 1.30 server compiles from this file
         for c in cls:
@@ -588,57 +428,6 @@ def scan_files(files):
                     add('RISK', 'calls ' + NOW_PROTECTED[t] + ' from outside the class; 1.30 made it protected (unverified whether that compiles)', rel)
                     break
 
-        # ---- 1.29: does what a 1.29 server compiles from this file use anything 1.29 lacks?
-        own29 = set(modclasses)
-        for c in cls29:
-            own29.update(c['methods'])
-            own29.update(c['fields'])
-        for c in cls29:
-            name = c['name']
-            if c['modded'] and name in NEW_CLASSES and name not in GLOBAL_CLASSES:
-                add('BREAK_129', 'modded class ' + name + ', which only exists from 1.30', rel)
-            elif not c['modded'] and c['base'] in NEW_CLASSES and c['base'] not in GLOBAL_CLASSES:
-                add('BREAK_129', 'class extends ' + c['base'] + ', which only exists from 1.30', rel + ' (' + name + ')')
-            vbase = vanilla_base(c, modclasses, B) or vanilla_base(c, modclasses, A)
-            if not vbase:
-                continue
-            # nearest class 1.29 has: a class new in 1.30 still inherits 1.29 methods from its old ancestors
-            base29 = next((x for x in chain(B, vbase) if x in A), vbase if vbase in A else None)
-            added = set()  # methods mods add (not override) to this class's vanilla chain or the mod's own bases
-            for x in chain(A, vbase) + chain(B, vbase):
-                added |= MODDED_ADDS.get(x, set())
-            b, seen = c['base'], set()
-            while b and b in modclasses and b not in seen:
-                seen.add(b)
-                added |= {m for m, o in modclasses[b]['methods'].items() if not any(v['override'] for v in o)}
-                b = modclasses[b]['base']
-            for mn, ovs in c['methods'].items():
-                for ov in ovs:
-                    if not ov['override'] or mn in added:
-                        continue
-                    vc, ms29 = find_method(A, base29, mn) if base29 else (None, None)
-                    vc30, ms30 = find_method(B, vbase, mn)
-                    s = sig(ov)
-                    if not vc and vc30 and s in {sig(m) for m in ms30}:
-                        add('BREAK_129', 'overrides ' + vc30 + '.' + mn + '(), which only exists from 1.30', rel)
-                    elif vc and vc30 and s not in {sig(m) for m in ms29} and s in {sig(m) for m in ms30}:
-                        old = ' | '.join('(' + ', '.join(m['params']) + ')' for m in ms29)
-                        add('BREAK_129', 'override uses the 1.30 signature of ' + vc30 + '.' + mn + '(' + ', '.join(s) + '); 1.29 has ' + old, rel)
-        body29 = strip(src29)
-        toks29 = set(IDENT.findall(body29))
-        # methods only, called as name(...): new field names (ammoType, orientation, OFF) are ordinary words
-        for t in toks29 & set(NEW_METHODS):
-            if t in own29 or t in GLOBAL_NAMES:
-                continue
-            if re.search(r'\b' + t + r'\s*\(', body29):
-                on = call_classes(body29, t, modclasses)
-                if on:
-                    add('BREAK_129', 'calls ' + sorted(on)[0] + '.' + t + '(), which 1.29 does not have: does not compile on 1.29', rel)
-                else:
-                    add('RISK_129', 'calls ' + NEW_METHODS[t] + ', which only exists from 1.30', rel)
-        for t in toks29 & NEW_CLASSES:
-            if t not in own29 and t not in GLOBAL_CLASSES:
-                add('RISK_129', 'uses class ' + t + ', which only exists from 1.30', rel)
     return res
 
 
@@ -661,26 +450,6 @@ else:
             if os.path.isfile(f):
                 with open(f, 'rb') as fh:
                     FILES[n].append((os.path.relpath(f, SRC).replace('\\', '/'), text(fh.read())))
-
-# Names any scanned mod declares: another mod may mod or call them, so they don't count as "new in 1.30".
-GLOBAL_CLASSES, GLOBAL_METHODS, GLOBAL_NAMES = set(), set(), set()
-MODDED_ADDS = {}  # vanilla class -> methods some mod adds to it with "modded class" (not override)
-for fs in FILES.values():
-    for _, src in fs:
-        try:
-            cls = parse(src)
-        except Exception:
-            continue
-        for c in cls:
-            if not c['modded']:
-                GLOBAL_CLASSES.add(c['name'])
-            for mn, ovs in c['methods'].items():
-                if not any(o['override'] for o in ovs):
-                    GLOBAL_METHODS.add(mn)
-                    if c['modded']:
-                        MODDED_ADDS.setdefault(c['name'], set()).add(mn)
-            GLOBAL_NAMES.update(c['fields'])
-GLOBAL_NAMES |= GLOBAL_CLASSES | GLOBAL_METHODS
 
 SCRIPT_PATHS = {}
 if PATHS:
@@ -827,7 +596,7 @@ SKIPPED = {rel for n, _, _, path in _skips if owns_path(manifest[n]['pbos'], pat
 VANILLA_NAMES = ALL130
 for n, info in manifest.items():
     files = FILES[n]
-    r = scan_files(files) if files else {'BREAK': {}, 'RISK': {}, 'INFO': {}, 'BREAK_129': {}, 'RISK_129': {}}
+    r = scan_files(files) if files else {'BREAK': {}, 'RISK': {}, 'INFO': {}}
     for pbo, mod_, path in SCRIPT_PATHS.get(n, []):
         if mod_ and mod_.lower().endswith('scriptmodule'):
             where = pbo + ': ' + mod_ + ' = ' + path
@@ -848,7 +617,7 @@ for n, info in manifest.items():
     report[n] = r
 json.dump(report, open(OUT, 'w'), indent=1)
 print('removed classes', len(REMOVED_CLASSES), 'removed members', len(REMOVED_MEMBERS), 'obsolete', len(OBSOLETE),
-      'new classes', len(NEW_CLASSES), 'new methods', len(NEW_METHODS), 'now protected', len(NOW_PROTECTED))
+      'now protected', len(NOW_PROTECTED))
 for n, r in sorted(report.items(), key=lambda kv: int(kv[0])):
-    print(n, r['mod'], 'B=%d R=%d I=%d | 1.29: B=%d R=%d' % (len(r['BREAK']), len(r['RISK']), len(r['INFO']), len(r['BREAK_129']), len(r['RISK_129'])),
+    print(n, r['mod'], 'B=%d R=%d I=%d' % (len(r['BREAK']), len(r['RISK']), len(r['INFO'])),
           'unscanned:' + ','.join(r['unscanned_pbos']) if r['unscanned_pbos'] else '')

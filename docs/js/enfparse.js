@@ -113,7 +113,6 @@ export function preprocess(src, defines) {
   return out.join('\n');
 }
 
-export const V129 = { DAYZ_1_29: true, DAYZ_1_30: false };
 export const V130 = { DAYZ_1_29: false, DAYZ_1_30: true };
 
 export function splitTop(s) {

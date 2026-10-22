@@ -1,8 +1,8 @@
 // Port of python/scan130.py.
 import { re, search, finditer, findall, fullmatch, countChar, strip as pyStrip } from './pyre.js?v=202610220104';
-import { parse, strip, preprocess, nocomment, V129, V130 } from './enfparse.js?v=202610220104';
+import { parse, strip, preprocess, nocomment, V130 } from './enfparse.js?v=202610220104';
 
-const LEVELS = ['BREAK', 'RISK', 'INFO', 'BREAK_129', 'RISK_129'];
+const LEVELS = ['BREAK', 'RISK', 'INFO'];
 
 function toIndex(raw) {
   const ix = new Map();
@@ -84,15 +84,7 @@ const IDENT = re('\\b[A-Za-z_]\\w*\\b');
 // Only an admin's debug spawn runs these, and the parts go to attachment slots.
 const SKIP_IN_DEBUG_SPAWN = new Set(['CreateInInventory now refuses items that do not fit (no log line)']);
 const DEBUG_SPAWN = re('\\bOnDebugSpawn\\s*\\([^)]*\\)\\s*\\{');
-// FindFile lists $profile:/$mission: with any flags on 1.30.164200 (DZEXP-134 fixed); flags -1, the
-// 164078 workaround, lists nothing on 1.29.
-const FF_129_MSG = 'FindFile with flags -1 lists nothing on 1.29, and the call has no retry ' +
-  '(retry with FindFileFlags.ALL when -1 finds nothing, or gate with #ifdef DAYZ_1_29)';
-const FF_CALL = re('\\bFindFile\\s*\\(');
-const MINUS_ONE = '-\\s*1';
-const FLAG_ARG = '(?:\\w+\\s*\\.\\s*)*(\\w+)\\s*(\\(.*\\))?';
-const FUNC_HEAD = re('\\b(\\w+)\\s*\\(([^;{}()]*)\\)\\s*\\{');
-const BLOCK_WORDS = new Set(['if', 'while', 'for', 'foreach', 'switch', 'catch', 'return']);
+
 const SCRIPT_PATH_MSG = 'CfgMods script path with backslashes: 1.30 compiles none of these scripts, silently, and other ' +
   'loaded code uses what they declare, so the module fails to compile';
 const SKIP_LOST_MSG = 'CfgMods script path with backslashes: 1.30 compiles none of these scripts, silently, so what they do is ' +
@@ -108,7 +100,7 @@ const IFDEF = re('^\\s*#\\s*ifn?def\\b', 'M');
 const CORE_DIR = re('(^|/)1_core/', 'I');
 const CORE_GATE = re('^[ \\t]*#[ \\t]*ifn?def[ \\t]+DAYZ_1_\\d+\\b', 'M');
 const CORE_GATE_MSG = 'version gate (#ifdef/#ifndef DAYZ_1_xx) in a 1_Core script: the version defines are not set yet ' +
-  'when the Core module compiles (measured on 1.29), so it always takes the "not defined" branch';
+  'when the Core module compiles, so it always takes the "not defined" branch';
 const WB_MSG = 'uses a class 1.30 declares only for Workbench (#ifdef WORKBENCH): outside an #ifdef WORKBENCH block ' +
   'the module does not compile ("Can\'t find variable")';
 const WB_GAME = { ...V130, WORKBENCH: false };
@@ -237,106 +229,6 @@ function typeFits(t, p) {
 const sigFits = (types, params, req) =>
   req <= types.length && types.length <= params.length && types.every((t, i) => typeFits(t, params[i]));
 
-function methodBodies(src, name) {
-  const out = [];
-  for (const m of finditer(re('\\b' + name + '\\s*\\([^;{}]*\\)\\s*\\{'), src)) {
-    let depth = 1;
-    let i = m.index + m[0].length;
-    while (i < src.length && depth) {
-      if (src[i] === '{') depth += 1;
-      else if (src[i] === '}') depth -= 1;
-      i += 1;
-    }
-    out.push(src.slice(m.index + m[0].length, i));
-  }
-  return out;
-}
-
-// [name, parameters, body start] of the function whose body holds src[pos], or null.
-function enclosingFunction(src, heads, pos) {
-  for (let k = heads.length - 1; k >= 0; k--) {
-    const h = heads[k];
-    const hend = h.index + h[0].length;
-    if (hend > pos) continue;
-    if (!BLOCK_WORDS.has(h[1]) && sameBlock(src, hend, pos)) return [h[1], h[2].split(',').map(pyStrip), hend];
-  }
-  return null;
-}
-
-// A FindFile flags argument that is -1: the literal, a const or static the mod sets to -1, a
-// method of the mod that returns -1, or a variable or parameter of the calling function that the
-// function sets to -1 or that its callers pass -1 into.
-function flagsMinusOne(a, modsrc, src, heads, pos, memo) {
-  if (a.startsWith('FindFileFlags')) return false;
-  if (fullmatch(MINUS_ONE, a)) return true;
-  const m = fullmatch(FLAG_ARG, a, 'S');
-  if (!m) return false;
-  const name = m[1];
-  if (m[2] !== undefined) {
-    const key = 'ret\0' + name;
-    if (!memo.has(key)) memo.set(key, methodBodies(modsrc, name).some((b) => search(re('\\breturn\\s*-\\s*1\\s*;'), b)));
-    return memo.get(key);
-  }
-  const dkey = 'decl\0' + name;
-  if (!memo.has(dkey)) memo.set(dkey, !!search(re('\\b(?:const|static)\\b[^;{}=()]*\\b' + name + '\\s*=\\s*-\\s*1\\s*;'), modsrc));
-  if (memo.get(dkey)) return true;
-  if (a.includes('.')) return false;
-  const fn = enclosingFunction(src, heads, pos);
-  if (!fn) return false;
-  const [fname, params, start] = fn;
-  if (search(re('\\b' + name + '\\s*=\\s*-\\s*1\\b'), src.slice(start, pos))) return true;
-  const idx = params.findIndex((x) => search(re('\\b' + name + '\\s*(?:=.*)?$'), x));
-  if (idx < 0) return false;
-  const key = 'pass\0' + fname + '\0' + idx;
-  if (!memo.has(key)) {
-    let found = false;
-    for (const c of finditer(re('\\b' + fname + '\\s*\\('), modsrc)) {
-      const got = callArgs(modsrc, c.index + c[0].length - 1);
-      if (got && got.length > idx && fullmatch(MINUS_ONE, pyStrip(got[idx]))) {
-        found = true;
-        break;
-      }
-    }
-    memo.set(key, found);
-  }
-  return memo.get(key);
-}
-
-// [offset, flags -1] for each FindFile call in src.
-function findfileHits(src, modsrc, memo) {
-  const out = [];
-  let heads = null;
-  for (const m of finditer(FF_CALL, src)) {
-    const open = m.index + m[0].length - 1;
-    const args = callArgs(src, open);
-    let fixed = false;
-    if (args && args.length >= 4) {
-      if (heads === null) heads = [...finditer(FUNC_HEAD, src)];
-      fixed = flagsMinusOne(pyStrip(args[3]), modsrc, src, heads, m.index, memo);
-    }
-    out.push([m.index, fixed]);
-  }
-  return out;
-}
-
-// src[b] is in the block that holds src[a] (or deeper): the braces between never close it.
-function sameBlock(src, a, b) {
-  let depth = 0;
-  for (let i = a; i < b; i++) {
-    if (src[i] === '{') depth += 1;
-    else if (src[i] === '}') {
-      depth -= 1;
-      if (depth < 0) return false;
-    }
-  }
-  return true;
-}
-
-// A -1 call followed by another call in the same function (1.29 gets its answer there).
-function hasRetry(src, hits, k) {
-  return hits.slice(k + 1).some(([at, fixed]) => !fixed && sameBlock(src, hits[k][0], at));
-}
-
 function ownsPath(pbos, path) {
   const norm = (s) => s.replace(/\\/g, '/').replace(/^\/+|\/+$/g, '').toLowerCase();
   const p = norm(path);
@@ -352,14 +244,10 @@ export function makeScanner(vanilla) {
   const A = toIndex(vanilla.previous);
   const B = toIndex(vanilla.stable);
   const ALL130 = names(B);
-  const ALL129 = names(A);
 
-  // types 1.30 declares only under #ifdef WORKBENCH (left out of '130'): their own check
+  // types 1.30 declares only under #ifdef WORKBENCH (left out of the stable index): their own check
   const WB_ONLY = new Set((vanilla.workbench || {}).stable || []);
   const REMOVED_CLASSES = new Set([...A.keys()].filter((c) => !B.has(c) && !WB_ONLY.has(c)));
-  const NEW_CLASSES = new Set([...B.keys()].filter((c) => !A.has(c)));
-  const NEW_METHODS = new Map();
-  for (const [cn, c] of B) for (const m of c.methods.keys()) if (!ALL129.has(m) && !NEW_METHODS.has(m)) NEW_METHODS.set(m, cn + '.' + m + '()');
 
   const CHILDREN = new Map();
   for (const [cn, c] of B) {
@@ -443,7 +331,7 @@ export function makeScanner(vanilla) {
 
   function load(text) {
     const out = { raw: text };
-    for (const [tag, defs] of [['130', V130], ['129', V129]]) {
+    for (const [tag, defs] of [['stable', V130]]) {
       const src = preprocess(nocomment(text), defs);
       let cls;
       try {
@@ -458,7 +346,7 @@ export function makeScanner(vanilla) {
 
   function ownClasses(parsed) {
     const out = new Map();
-    for (const p of parsed) for (const tag of ['130', '129']) for (const c of p.load[tag][1]) if (!c.modded && !out.has(c.name)) out.set(c.name, c);
+    for (const p of parsed) for (const tag of ['stable']) for (const c of p.load[tag][1]) if (!c.modded && !out.has(c.name)) out.set(c.name, c);
     return out;
   }
 
@@ -474,43 +362,6 @@ export function makeScanner(vanilla) {
   }
 
   const anyOverride = (ovs) => ovs.some((o) => o.override);
-
-  const LOWER_B = new Map([...B.keys()].map((c) => [c.toLowerCase(), c]));
-  // Vanilla 1.30 class of the receiver in a "x.t(" / "Class.t(" / "Getter().t(" match, or null.
-  function receiverClass(body, m, modclasses) {
-    const [, dot, name, call] = m;
-    if (dot !== undefined && call === undefined) return null; // a.b.t(): field type unknown
-    if (call !== undefined) {
-      const rets = new Set();
-      for (const c of B.values()) for (const s of c.methods.get(name) || []) if (s.ret) rets.add(s.ret.split(/\s+/).pop());
-      return rets.size === 1 ? LOWER_B.get([...rets][0]) || null : null;
-    }
-    if (B.has(name)) return name;
-    let typ = null;
-    for (const d of finditer(re('\\b(\\w+)\\s+' + name + '\\s*[=;,)]'), body)) {
-      if (!['return', 'new', 'delete', 'out', 'inout', 'ref', 'autoptr'].includes(d[1])) {
-        typ = d[1];
-        break;
-      }
-    }
-    if (B.has(typ)) return typ;
-    return modclasses.has(typ) ? vanillaBase(modclasses.get(typ), modclasses, B) : null;
-  }
-
-  // Vanilla classes that define t for every t() call, or empty if any call's receiver is unknown.
-  function callClasses(body, t, modclasses) {
-    const out = new Set();
-    let n = 0;
-    for (const m of finditer(re('(\\.\\s*)?\\b(\\w+)\\s*(\\((?:[^()]|\\([^()]*\\))*\\))?\\s*\\.\\s*' + t + '\\s*\\('), body)) {
-      n++;
-      const vc = receiverClass(body, m, modclasses);
-      const cls = vc ? findMethod(B, vc, t)[0] : null;
-      if (!cls) return [];
-      out.add(cls);
-    }
-    if (n !== findall(re('\\b' + t + '\\s*\\('), body).length) return [];
-    return [...out];
-  }
 
   // [["Class.t", declared type]] for every x.t() call whose x has a declared type; empty if any call can't be resolved.
   function receivers(body, t, modclasses) {
@@ -532,7 +383,7 @@ export function makeScanner(vanilla) {
     return [...out.values()];
   }
 
-  function scanFiles(files, G) {
+  function scanFiles(files) {
     const res = Object.fromEntries(LEVELS.map((l) => [l, {}]));
     const add = (level, msg, where) => {
       if (!res[level][msg]) res[level][msg] = [];
@@ -540,14 +391,11 @@ export function makeScanner(vanilla) {
     };
     const parsed = files.map((f) => ({ rel: f.rel, load: load(f.text) }));
     const modclasses = ownClasses(parsed);
-    const mod29 = parsed.map((p) => p.load['129'][0]).join('\n');
-    const all29 = mod29.includes('FindFileFlags.ALL');
-    const memo29 = new Map();
     // methods and fields the mod declares in any of its files (overrides excluded)
     const modOwn = new Set();
     const modOverrides = new Set(); // a call to one of these may reach the mod's own body
     for (const p of parsed) {
-      for (const tag of ['130', '129']) {
+      for (const tag of ['stable']) {
         for (const c of p.load[tag][1]) {
           for (const [mn, ovs] of c.methods) {
             if (!anyOverride(ovs)) modOwn.add(mn);
@@ -559,8 +407,7 @@ export function makeScanner(vanilla) {
     }
     for (const p of parsed) {
       const rel = p.rel;
-      const [src30, cls] = p.load['130'];
-      const [src29, cls29] = p.load['129'];
+      const [src30, cls] = p.load.stable;
       for (const [level, msg, rx] of RAW_PATTERNS) for (const m of finditer(rx, p.load.raw)) add(level, msg, rel + ':' + (countChar(p.load.raw, '\n', 0, m.index) + 1));
       if (search(CORE_DIR, rel)) for (const m of finditer(CORE_GATE, p.load.raw)) add('RISK', CORE_GATE_MSG, rel + ':' + (countChar(p.load.raw, '\n', 0, m.index) + 1));
       if (findall(IDENT, p.load.raw).some((t) => WB_ONLY.has(t)) && moduleRank(rel) && !search(WORKBENCH_DIR, rel)) {
@@ -585,12 +432,6 @@ export function makeScanner(vanilla) {
         for (const m of finditer(rx, src30)) {
           if (SKIP_IN_DEBUG_SPAWN.has(msg) && spans.some(([a, b]) => a <= m.index && m.index < b)) continue;
           add(level, msg, rel + ':' + (countChar(src30, '\n', 0, m.index) + 1));
-        }
-      }
-      if (!all29) {
-        const hits29 = findfileHits(src29, mod29, memo29);
-        for (const [k, [at, fixed]] of hits29.entries()) {
-          if (fixed && !hasRetry(src29, hits29, k)) add('RISK_129', FF_129_MSG, rel + ':' + (countChar(src29, '\n', 0, at) + 1));
         }
       }
 
@@ -688,86 +529,11 @@ export function makeScanner(vanilla) {
         }
       }
 
-      // ---- 1.29: does what a 1.29 server compiles from this file use anything 1.29 lacks?
-      const own29 = new Set(modclasses.keys());
-      for (const c of cls29) {
-        for (const m of c.methods.keys()) own29.add(m);
-        for (const f of c.fields) own29.add(f);
-      }
-      for (const c of cls29) {
-        const name = c.name;
-        if (c.modded && NEW_CLASSES.has(name) && !G.classes.has(name)) add('BREAK_129', 'modded class ' + name + ', which only exists from 1.30', rel);
-        else if (!c.modded && NEW_CLASSES.has(c.base) && !G.classes.has(c.base)) add('BREAK_129', 'class extends ' + c.base + ', which only exists from 1.30', rel + ' (' + name + ')');
-        const vbase = vanillaBase(c, modclasses, B) || vanillaBase(c, modclasses, A);
-        if (!vbase) continue;
-        // nearest class 1.29 has: a class new in 1.30 still inherits 1.29 methods from its old ancestors
-        const base29 = chain(B, vbase).find((x) => A.has(x)) ?? (A.has(vbase) ? vbase : null);
-        const added = new Set(); // methods mods add (not override) to this class's vanilla chain or the mod's own bases
-        for (const x of chain(A, vbase).concat(chain(B, vbase))) for (const m of G.moddedAdds.get(x) || []) added.add(m);
-        let b = c.base;
-        const seen = new Set();
-        while (b && modclasses.has(b) && !seen.has(b)) {
-          seen.add(b);
-          for (const [m, o] of modclasses.get(b).methods) if (!anyOverride(o)) added.add(m);
-          b = modclasses.get(b).base;
-        }
-        for (const [mn, ovs] of c.methods) {
-          for (const ov of ovs) {
-            if (!ov.override || added.has(mn)) continue;
-            const [vc, ms29] = base29 ? findMethod(A, base29, mn) : [null, null];
-            const [vc30, ms30] = findMethod(B, vbase, mn);
-            const s = sig(ov);
-            if (!vc && vc30 && sigs(ms30).has(s)) add('BREAK_129', 'overrides ' + vc30 + '.' + mn + '(), which only exists from 1.30', rel);
-            else if (vc && vc30 && !sigs(ms29).has(s) && sigs(ms30).has(s)) {
-              add('BREAK_129', 'override uses the 1.30 signature of ' + vc30 + '.' + mn + '(' + ov.params.join(', ') + '); 1.29 has ' + ms29.map(paramList).join(' | '), rel);
-            }
-          }
-        }
-      }
-      const body29 = strip(src29);
-      const toks29 = new Set(findall(IDENT, body29));
-      // methods only, called as name(...): new field names (ammoType, orientation, OFF) are ordinary words
-      for (const t of toks29) {
-        if (NEW_METHODS.has(t) && !own29.has(t) && !G.names.has(t) && search(re('\\b' + t + '\\s*\\('), body29)) {
-          const on = callClasses(body29, t, modclasses);
-          if (on.length) add('BREAK_129', 'calls ' + on.sort()[0] + '.' + t + '(), which 1.29 does not have: does not compile on 1.29', rel);
-          else add('RISK_129', 'calls ' + NEW_METHODS.get(t) + ', which only exists from 1.30', rel);
-        }
-        if (NEW_CLASSES.has(t) && !own29.has(t) && !G.classes.has(t)) add('RISK_129', 'uses class ' + t + ', which only exists from 1.30', rel);
-      }
     }
     return res;
   }
 
   function scan(mods, progress) {
-    // Names any scanned mod declares: another mod may mod or call them, so they don't count as "new in 1.30".
-    const G = { classes: new Set(), methods: new Set(), names: new Set(), moddedAdds: new Map() };
-    for (const m of mods) {
-      for (const f of m.files) {
-        let cls;
-        try {
-          cls = parse(f.text);
-        } catch {
-          continue;
-        }
-        for (const c of cls) {
-          if (!c.modded) G.classes.add(c.name);
-          for (const [mn, ovs] of c.methods) {
-            if (!anyOverride(ovs)) {
-              G.methods.add(mn);
-              if (c.modded) {
-                if (!G.moddedAdds.has(c.name)) G.moddedAdds.set(c.name, new Set());
-                G.moddedAdds.get(c.name).add(mn);
-              }
-            }
-          }
-          for (const f2 of c.fields) G.names.add(f2);
-        }
-      }
-    }
-    for (const x of G.classes) G.names.add(x);
-    for (const x of G.methods) G.names.add(x);
-
     // Script folders 1.30 skips (backslash paths): graded by what they hold and whether other code needs it.
     const decls = new Map(); // rel -> [type names, Map(modded class -> members it adds)]
     const texts = new Map();
@@ -880,7 +646,7 @@ export function makeScanner(vanilla) {
     const report = {};
     mods.forEach((m, k) => {
       if (progress) progress(k, mods.length, m.mod);
-      const r = m.files.length ? scanFiles(m.files, G) : Object.fromEntries(LEVELS.map((l) => [l, {}]));
+      const r = m.files.length ? scanFiles(m.files) : Object.fromEntries(LEVELS.map((l) => [l, {}]));
       for (const sp of m.scriptPaths) {
         if (isScriptPath(sp)) {
           const where = sp.pbo + ': ' + sp.module + ' = ' + sp.path;
@@ -910,7 +676,7 @@ export function makeScanner(vanilla) {
   return {
     scan,
     stats: { removedClasses: REMOVED_CLASSES.size, removedMembers: REMOVED_MEMBERS.size, obsolete: OBSOLETE.size,
-      newClasses: NEW_CLASSES.size, newMethods: NEW_METHODS.size, nowProtected: NOW_PROTECTED.size },
+      nowProtected: NOW_PROTECTED.size },
     versions: vanilla.versions || {},
   };
 }

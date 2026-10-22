@@ -107,7 +107,6 @@ def preprocess(src, defines):
     return '\n'.join(out)
 
 
-V129 = {'DAYZ_1_29': True, 'DAYZ_1_30': False}
 V130 = {'DAYZ_1_29': False, 'DAYZ_1_30': True}
 
 

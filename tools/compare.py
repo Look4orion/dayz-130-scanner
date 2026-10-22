@@ -1,7 +1,7 @@
 """Usage: compare.py <python report.json> <js report.json>"""
 import json, sys
 
-LEVELS = ('BREAK', 'RISK', 'INFO', 'BREAK_129', 'RISK_129')
+LEVELS = ('BREAK', 'RISK', 'INFO')
 a = json.load(open(sys.argv[1], encoding='utf-8'))
 b = json.load(open(sys.argv[2], encoding='utf-8'))
 diffs = 0

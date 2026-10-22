@@ -2,8 +2,6 @@ const LEVELS = [
   ['BREAK', 'Breaks on 1.30', 'break'],
   ['RISK', 'Check by hand (1.30)', 'risk'],
   ['INFO', 'Good to know (1.30)', 'info'],
-  ['BREAK_129', "Won't compile on 1.29", 'break'],
-  ['RISK_129', 'Check by hand (1.29)', 'risk'],
 ];
 const SHOW_LOCATIONS = 8;
 
@@ -152,13 +150,12 @@ function run(groups) {
 const count = (r, lv) => Object.keys(r[lv]).length;
 
 function severity(r) {
-  return [count(r, 'BREAK') + count(r, 'BREAK_129'), count(r, 'RISK') + count(r, 'RISK_129'), count(r, 'INFO')];
+  return [count(r, 'BREAK'), count(r, 'RISK'), count(r, 'INFO')];
 }
 
 function verdict(r) {
   const [b, k] = severity(r);
   if (count(r, 'BREAK')) return ['break', 'Breaks on 1.30'];
-  if (count(r, 'BREAK_129')) return ['break', "Won't compile on 1.29"];
   if (k) return ['risk', 'Check by hand'];
   if (!r.files) return ['none', 'No scripts'];
   return ['ok', 'No known breakers'];
@@ -183,7 +180,7 @@ function render(rep) {
     const counts = el('span', { class: 'counts' });
     for (const [lv, , c] of LEVELS) {
       const n = count(r, lv);
-      if (n && !(hideInfo && lv === 'INFO')) counts.append(el('span', { class: 'pill ' + c, title: LEVELS.find((x) => x[0] === lv)[1] }, `${n} ${lv.replace('_129', ' 1.29').toLowerCase()}`));
+      if (n && !(hideInfo && lv === 'INFO')) counts.append(el('span', { class: 'pill ' + c, title: LEVELS.find((x) => x[0] === lv)[1] }, `${n} ${lv.toLowerCase()}`));
     }
     const body = el('div', { class: 'detail' });
     for (const [lv, title, c] of LEVELS) {
