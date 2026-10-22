@@ -10,6 +10,7 @@
  {"id": "create-in-inventory", "what": "CreateInInventory now refuses items that do not fit", "verified": "1.30.164200"},
  {"id": "car-fluid-fill", "what": "Fill() lands a frame late", "verified": "1.30.164200"},
  {"id": "ifdef-stable-version", "what": "switches the code off again on", "verified": "1.30.164200"},
+ {"id": "ifndef-version", "what": "only skips the code on", "verified": "1.30.164200"},
  {"id": "build-experimental", "what": "BUILD_EXPERIMENTAL used as a version gate", "verified": "1.30.164200"},
  {"id": "core-gate", "what": "version gate (#ifdef/#ifndef DAYZ_1_xx) in a 1_Core script", "verified": "1.30.164200"},
  {"id": "workbench-class", "what": "uses a class 1.30 declares only for Workbench", "verified": "1.30.164200"},

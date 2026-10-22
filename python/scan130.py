@@ -149,6 +149,9 @@ EXP = None
 if 'exp' in V and ver(V['versions']['exp']) > ver(V['versions']['stable']):
     EXP = Delta(B, V['exp'], extras('exp'), 'Exp ' + V['versions']['exp'], old_obsolete=extras('stable')['obsolete'])
     EXP_DEFS = defines_for(V['versions']['exp'])
+    # Exp's names that stable lacks (its "removed" ones, seen from Exp): code stable compiles can't use them.
+    AHEAD = Delta(V['exp'], B, extras('stable'), STABLE.label)
+    AHEAD_WHO = 'which only Exp %s has, but stable %s compiles this code too' % (V['versions']['exp'], V['versions']['stable'])
 LEVELS = ('BREAK', 'RISK', 'INFO') + (('BREAK_EXP', 'RISK_EXP', 'INFO_EXP') if EXP else ())
 ALL130 = STABLE.all_new
 # Obsolete overrides with their own, more specific note in PATTERNS.
@@ -173,16 +176,20 @@ PATTERNS = [
     ('INFO', 'CreateInInventory now refuses items that do not fit (no log line)', re.compile(r'\bCreateInInventory\s*\(')),
     ('INFO', 'Fill() lands a frame late on 1.30', re.compile(r'\.\s*Fill\s*\(\s*CarFluid')),
 ]
-def gate_rule(major, minor):
-    """#ifdef on stable's own version define: the code is off again on the next build."""
-    d = 'DAYZ_%d_%d' % (major, minor)
-    msg = '#ifdef %s switches the code off again on %d.%d (use #ifndef DAYZ_%d_%d)' % (d, major, minor + 1, major, minor - 1)
-    return ('RISK', msg, re.compile(r'^\s*#\s*if(?:n?def)?\s+(?:defined\s*\(?\s*)?' + d + r'\b', re.M))
+def gate_rules(major, minor):
+    """Gates on stable's or a newer (Exp) version define: they only fit that one build."""
+    out = []
+    for n in range(minor, minor + 10):
+        d = 'DAYZ_%d_%d' % (major, n)
+        out.append(('RISK', '#ifdef %s switches the code off again on %d.%d (use #ifndef DAYZ_%d_%d)' % (d, major, n + 1, major, n - 1),
+                    re.compile(r'^\s*#\s*if(?:def)?\s+(?:defined\s*\(?\s*)?' + d + r'\b', re.M)))
+        out.append(('INFO', '#ifndef %s only skips the code on %d.%d: %d.%d compiles it again' % (d, major, n, major, n + 1),
+                    re.compile(r'^\s*#\s*ifndef\s+' + d + r'\b', re.M)))
+    return out
 
 
 # Matched against the whole file (directives included).
-RAW_PATTERNS = [
-    gate_rule(*(int(x) for x in V['versions']['stable'].split('.')[:2])),
+RAW_PATTERNS = gate_rules(*(int(x) for x in V['versions']['stable'].split('.')[:2])) + [
     ('RISK', 'BUILD_EXPERIMENTAL used as a version gate: it is gone on 1.30 stable', re.compile(r'^\s*#\s*if(?:n?def)?\s+(?:defined\s*\(?\s*)?BUILD_EXPERIMENTAL\b', re.M)),
 ]
 # Removed names that are also ordinary words: only count them with supporting context in the same file.
@@ -414,6 +421,35 @@ def diff_checks(vd, rel, src, cls, modclasses, mod_own, mod_overrides, add):
                 add('RISK', 'calls ' + vd.now_protected[t] + ' from outside the class; ' + vd.label + ' made it protected (unverified whether that compiles)', rel)
                 break
 
+def ahead_checks(rel, src, cls, modclasses, mod_own, add):
+    """What stable compiles from this file that only Exp has (a version gate that lets stable in too)."""
+    for c in cls:
+        if c['modded'] and c['name'] in AHEAD.removed_classes:
+            add('BREAK', 'modded class of ' + c['name'] + ', ' + AHEAD_WHO + ' and fails', rel)
+        elif not c['modded'] and c['base'] in AHEAD.removed_classes and c['base'] not in modclasses:
+            add('BREAK', 'class extends ' + c['base'] + ', ' + AHEAD_WHO + ' and fails', rel + ' (' + c['name'] + ')')
+        vbase = vanilla_base(c, modclasses, B)
+        if not vbase:
+            continue
+        for mn, ovs in c['methods'].items():
+            if any(o['override'] for o in ovs) and mn not in mod_own and find_method(B, vbase, mn)[0] is None:
+                vc = find_method(V['exp'], vbase, mn)[0]
+                if vc:
+                    add('BREAK', 'overrides ' + vc + '.' + mn + '(), ' + AHEAD_WHO + ' and fails', rel)
+    body = strip(src)
+    own = set(modclasses) | mod_own
+    for c in cls:
+        own.update(c['methods'])
+        own.update(c['fields'])
+    toks = set(IDENT.findall(body)) - own
+    for t in toks & set(AHEAD.removed_members):
+        if not (t in GENERIC and not re.search(GENERIC[t], body)):
+            add('RISK', 'uses ' + AHEAD.removed_members[t] + ', ' + AHEAD_WHO + ' (check its version gate)', rel)
+    for t in toks & AHEAD.removed_classes:
+        if not (t in GENERIC and not re.search(GENERIC[t], body)):
+            add('RISK', 'uses class ' + t + ', ' + AHEAD_WHO + ' (check its version gate)', rel)
+
+
 def scan_files(files):
     res = {lv: {} for lv in LEVELS}
 
@@ -462,6 +498,7 @@ def scan_files(files):
 
         diff_checks(STABLE, rel, src30, cls, modclasses, mod_own, mod_overrides, add)
         if EXP:
+            ahead_checks(rel, src30, cls, modclasses, mod_own, add)
             src_exp, cls_exp = p['exp']
             diff_checks(EXP, rel, src_exp, cls_exp, modclasses, mod_own, mod_overrides, lambda lv, msg, where: add(lv + '_EXP', msg, where))
     return res

@@ -52,8 +52,10 @@ mod's own, keep both branches). Comments are ignored.
   `AddExplosionEffectForSurface` registrations.
 - **Car lights** (`INFO`): overrides of `CreateFrontLight`/`CreateRearLight` are never called on
   1.30; the car still gets vanilla's default headlights, not its own brightness/range/colour.
-- **Wrong version gates** (`RISK`): `#ifdef DAYZ_1_30` (off again on 1.31; use `#ifndef DAYZ_1_29`)
-  and `BUILD_EXPERIMENTAL` (gone on 1.30 stable).
+- **Wrong version gates** (`RISK`): `#ifdef` on stable's or a newer version, such as an
+  experimental one (`#ifdef DAYZ_1_31` is off again on 1.32; use `#ifndef DAYZ_1_30`), and
+  `BUILD_EXPERIMENTAL` (gone on 1.30 stable). `#ifndef` on stable's or a newer version is `INFO`: it
+  only skips the code on that one version, so it is right only for code written for the versions after it.
 - **Version gates in `1_Core`** (`RISK`): `#ifdef`/`#ifndef DAYZ_1_xx` in a 1_Core script. The
   version defines aren't set yet when the Core module compiles, so the gate
   always takes the "not defined" branch. Use a runtime fallback there instead.
@@ -94,7 +96,14 @@ mod's own, keep both branches). Comments are ignored.
 experimental build newer than stable: the overrides, name-clash, removed-use, protected and
 `[Obsolete]` checks above, comparing the experimental build with stable. Only methods the
 experimental build newly marks `[Obsolete]` count, and Workbench-only classes are not reported in
-folders the game never compiles. The other checks above (known patterns, Workbench classes,
+folders the game never compiles.
+
+**Code stable compiles that only the experimental build supports** (`BREAK`, `RISK`), while the
+index holds an experimental build: a `modded class` of, or a class extending, a class only the
+experimental build has, or an override of a method only it has, is `BREAK`; a use of such a class,
+method or field is `RISK`. This is code whose version gate (or lack of one) lets stable compile it.
+
+The other checks above (known patterns, Workbench classes,
 version gates, backslash paths, name clashes between mods) run for stable only.
 
 A method or field a mod declares in any of its own files counts as the mod's own, so calling it is

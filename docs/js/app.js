@@ -129,7 +129,7 @@ function run(groups) {
   status.textContent = 'Starting...';
   drop.classList.add('busy');
   if (worker) worker.terminate();
-  worker = new Worker(new URL('./worker.js?v=202610220345', import.meta.url), { type: 'module' });
+  worker = new Worker(new URL('./worker.js?v=202610220525', import.meta.url), { type: 'module' });
   worker.onmessage = (ev) => {
     const d = ev.data;
     if (d.type === 'progress') {

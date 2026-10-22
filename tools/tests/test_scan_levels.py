@@ -122,6 +122,70 @@ def test_version_gate_follows_stable():
     assert msgs == ['#ifdef DAYZ_1_31 switches the code off again on 1.32 (use #ifndef DAYZ_1_30)'], r['RISK']
 
 
+def with_versions(base, **versions):
+    v = json.load(open(base))
+    v['versions'].update(versions)
+    p = os.path.join(tempfile.mkdtemp(), 'v.json')
+    json.dump(v, open(p, 'w'))
+    return p
+
+
+def test_ifdef_on_exp_version():
+    r = scan('#ifdef DAYZ_1_31\nclass G {};\n#endif\n')
+    assert '#ifdef DAYZ_1_31 switches the code off again on 1.32 (use #ifndef DAYZ_1_30)' in r['RISK'], r['RISK']
+
+
+def test_ifndef_gate_says_ifndef():
+    r = scan('#ifndef DAYZ_1_30\nclass G {};\n#endif\n')
+    assert not any('DAYZ_1_30' in m for m in r['RISK']), r['RISK']
+    assert '#ifndef DAYZ_1_30 only skips the code on 1.30: 1.31 compiles it again' in r['INFO'], r['INFO']
+
+
+EXP_ONLY = '''
+modded class Transport
+{
+    override bool HasCrew()
+    {
+        return true;
+    }
+}
+class F : FishingSplashEffect
+{
+}
+'''
+EXP_ONLY_USE = '''
+class U
+{
+    bool Run(Transport t)
+    {
+        return t.HasCrew();
+    }
+}
+'''
+WHO = 'which only Exp 1.30.164200 has, but stable 1.30.164078 compiles this code too'
+
+
+def test_stable_code_using_exp_only_names():
+    r = scan(EXP_ONLY, STANDIN)
+    assert 'overrides Transport.HasCrew(), ' + WHO + ' and fails' in r['BREAK'], r['BREAK']
+    assert 'class extends FishingSplashEffect, ' + WHO + ' and fails' in r['BREAK'], r['BREAK']
+    r = scan(EXP_ONLY_USE, STANDIN)
+    assert 'uses Transport.HasCrew(), ' + WHO + ' (check its version gate)' in r['RISK'], r['RISK']
+
+
+def test_exp_only_name_declared_by_the_mod_is_its_own():
+    r = scan(EXP_ONLY_USE + 'class W\n{\n    bool HasCrew() { return false; }\n}\n', STANDIN)
+    assert not any('which only Exp' in m for m in r['RISK']), r['RISK']
+
+
+def test_exp_only_names_behind_exp_gate_pass():
+    p = with_versions(STANDIN, exp='1.31.1')
+    r = scan('#ifdef DAYZ_1_31\n' + EXP_ONLY + '#endif\n', p)
+    assert not any('which only Exp' in m for lv in ('BREAK', 'RISK') for m in r[lv]), r
+    r = scan('#ifndef DAYZ_1_29\n' + EXP_ONLY + '#endif\n', p)
+    assert any('which only Exp 1.31.1 has' in m for m in r['BREAK']), r['BREAK']
+
+
 if __name__ == '__main__':
     for n, f in list(globals().items()):
         if n.startswith('test_'):

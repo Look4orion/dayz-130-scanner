@@ -1,6 +1,6 @@
 // Port of python/scan130.py.
-import { re, search, finditer, findall, fullmatch, countChar, strip as pyStrip } from './pyre.js?v=202610220345';
-import { parse, strip, preprocess, nocomment, definesFor } from './enfparse.js?v=202610220345';
+import { re, search, finditer, findall, fullmatch, countChar, strip as pyStrip } from './pyre.js?v=202610220525';
+import { parse, strip, preprocess, nocomment, definesFor } from './enfparse.js?v=202610220525';
 
 const LEVELS = ['BREAK', 'RISK', 'INFO'];
 
@@ -244,11 +244,17 @@ export function makeScanner(vanilla) {
   const ALL130 = names(B);
 
   const STABLE_DEFS = definesFor(vanilla.versions.stable);
-  // #ifdef on stable's own version define: the code is off again on the next build
+  // gates on stable's or a newer (Exp) version define: they only fit that one build
   const [MAJOR, MINOR] = vanilla.versions.stable.split('.').slice(0, 2).map(Number);
-  const GATE = 'DAYZ_' + MAJOR + '_' + MINOR;
-  const RAW_RULES = [['RISK', `#ifdef ${GATE} switches the code off again on ${MAJOR}.${MINOR + 1} (use #ifndef DAYZ_${MAJOR}_${MINOR - 1})`,
-    re('^\\s*#\\s*if(?:n?def)?\\s+(?:defined\\s*\\(?\\s*)?' + GATE + '\\b', 'M')], ...RAW_PATTERNS];
+  const RAW_RULES = [];
+  for (let n = MINOR; n < MINOR + 10; n++) {
+    const d = 'DAYZ_' + MAJOR + '_' + n;
+    RAW_RULES.push(['RISK', `#ifdef ${d} switches the code off again on ${MAJOR}.${n + 1} (use #ifndef DAYZ_${MAJOR}_${n - 1})`,
+      re('^\\s*#\\s*if(?:def)?\\s+(?:defined\\s*\\(?\\s*)?' + d + '\\b', 'M')]);
+    RAW_RULES.push(['INFO', `#ifndef ${d} only skips the code on ${MAJOR}.${n}: ${MAJOR}.${n + 1} compiles it again`,
+      re('^\\s*#\\s*ifndef\\s+' + d + '\\b', 'M')]);
+  }
+  RAW_RULES.push(...RAW_PATTERNS);
   const WB_GAME = { ...STABLE_DEFS, WORKBENCH: false };
   const extras = (role) => Object.fromEntries(['workbench', 'obsolete', 'obsoleteDefs', 'obsoleteCalls', 'obsoleteUse'].map((k) => [k, (vanilla[k] || {})[role]]));
   const isPublic = (s) => (s.access || 'public') === 'public';
@@ -356,6 +362,9 @@ export function makeScanner(vanilla) {
     ? makeDelta(B, toIndex(vanilla.exp), extras('exp'), 'Exp ' + vanilla.versions.exp, new Set(), (vanilla.obsolete || {}).stable || [])
     : null;
   const EXP_DEFS = EXP ? definesFor(vanilla.versions.exp) : null;
+  // Exp's names that stable lacks (its "removed" ones, seen from Exp): code stable compiles can't use them.
+  const AHEAD = EXP ? makeDelta(EXP.new, B, extras('stable'), STABLE.label) : null;
+  const AHEAD_WHO = EXP ? `which only Exp ${vanilla.versions.exp} has, but stable ${vanilla.versions.stable} compiles this code too` : '';
   const sameDefs = (a, b) => JSON.stringify(a) === JSON.stringify(b);
   const PASSES = EXP ? ['stable', 'exp'] : ['stable'];
   const LEVELS_ALL = EXP ? [...LEVELS, 'BREAK_EXP', 'RISK_EXP', 'INFO_EXP'] : LEVELS;
@@ -515,6 +524,35 @@ export function makeScanner(vanilla) {
     }
   }
 
+  // What stable compiles from this file that only Exp has (a version gate that lets stable in too).
+  function aheadChecks(rel, src, cls, modclasses, modOwn, add) {
+    for (const c of cls) {
+      if (c.modded && AHEAD.removedClasses.has(c.name)) add('BREAK', 'modded class of ' + c.name + ', ' + AHEAD_WHO + ' and fails', rel);
+      else if (!c.modded && AHEAD.removedClasses.has(c.base) && !modclasses.has(c.base)) {
+        add('BREAK', 'class extends ' + c.base + ', ' + AHEAD_WHO + ' and fails', rel + ' (' + c.name + ')');
+      }
+      const vbase = vanillaBase(c, modclasses, B);
+      if (!vbase) continue;
+      for (const [mn, ovs] of c.methods) {
+        if (anyOverride(ovs) && !modOwn.has(mn) && findMethod(B, vbase, mn)[0] === null) {
+          const vc = findMethod(EXP.new, vbase, mn)[0];
+          if (vc) add('BREAK', 'overrides ' + vc + '.' + mn + '(), ' + AHEAD_WHO + ' and fails', rel);
+        }
+      }
+    }
+    const body = strip(src);
+    const own = new Set([...modclasses.keys(), ...modOwn]);
+    for (const c of cls) {
+      for (const m of c.methods.keys()) own.add(m);
+      for (const f of c.fields) own.add(f);
+    }
+    for (const t of new Set(findall(IDENT, body))) {
+      if (own.has(t) || (GENERIC.has(t) && !search(GENERIC.get(t), body))) continue;
+      if (AHEAD.removedMembers.has(t)) add('RISK', 'uses ' + AHEAD.removedMembers.get(t) + ', ' + AHEAD_WHO + ' (check its version gate)', rel);
+      if (AHEAD.removedClasses.has(t)) add('RISK', 'uses class ' + t + ', ' + AHEAD_WHO + ' (check its version gate)', rel);
+    }
+  }
+
   function scanFiles(files) {
     const res = Object.fromEntries(LEVELS_ALL.map((l) => [l, {}]));
     const add = (level, msg, where) => {
@@ -569,6 +607,7 @@ export function makeScanner(vanilla) {
 
       diffChecks(STABLE, rel, src30, cls, modclasses, modOwn, modOverrides, add);
       if (EXP) {
+        aheadChecks(rel, src30, cls, modclasses, modOwn, add);
         const [srcExp, clsExp] = p.load.exp;
         diffChecks(EXP, rel, srcExp, clsExp, modclasses, modOwn, modOverrides, (lv, msg, where) => add(lv + '_EXP', msg, where));
       }
