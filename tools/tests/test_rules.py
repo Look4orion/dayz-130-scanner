@@ -19,10 +19,9 @@ def vanilla_with_stable(version):
     return p
 
 
-def test_current_data_flags_only_unverified_rules():
+def test_current_data_has_no_stale_rules():
     code, out = run()
-    assert out[-1] == 'stale 1' and code == 1, out
-    assert out[0].startswith('STALE core-gate (verified 1.29.163709, stable 1.30.164200)'), out
+    assert out == ['stale 0'] and code == 0, out
 
 
 def test_newer_stable_flags_every_rule():

@@ -11,7 +11,7 @@
  {"id": "car-fluid-fill", "what": "Fill() lands a frame late", "verified": "1.30.164200"},
  {"id": "ifdef-stable-version", "what": "switches the code off again on", "verified": "1.30.164200"},
  {"id": "build-experimental", "what": "BUILD_EXPERIMENTAL used as a version gate", "verified": "1.30.164200"},
- {"id": "core-gate", "what": "version gate (#ifdef/#ifndef DAYZ_1_xx) in a 1_Core script", "verified": "1.29.163709"},
+ {"id": "core-gate", "what": "version gate (#ifdef/#ifndef DAYZ_1_xx) in a 1_Core script", "verified": "1.30.164200"},
  {"id": "workbench-class", "what": "uses a class 1.30 declares only for Workbench", "verified": "1.30.164200"},
  {"id": "vector-cross", "what": "calls vector.Cross(), which 1.30.164078 added", "verified": "1.30.164200"},
  {"id": "script-path-needed", "what": "1.30 compiles none of these scripts, silently, and other", "verified": "1.30.164200"},
