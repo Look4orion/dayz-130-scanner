@@ -41,8 +41,19 @@ def levels(r):
     return {k for k in r if k.split('_')[0] in ('BREAK', 'RISK', 'INFO')}
 
 
+def stable_only():
+    d = tempfile.mkdtemp()
+    v = os.path.join(d, 'vanilla.json')
+    with open(VANILLA, 'rb') as src, open(v, 'wb') as dst:
+        dst.write(src.read())
+    p = subprocess.run([sys.executable, '-I', os.path.join(ROOT, 'python', 'vanilla.py'), 'clear-exp', v], capture_output=True, text=True)
+    assert p.returncode == 0, p.stderr[-2000:]
+    return v
+
+
 def test_stable_only_levels():
-    assert levels(scan(MOD)) == {'BREAK', 'RISK', 'INFO'}, levels(scan(MOD))
+    r = scan(MOD, stable_only())
+    assert levels(r) == {'BREAK', 'RISK', 'INFO'}, levels(r)
 
 
 def test_no_findfile_129_hit():
