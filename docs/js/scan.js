@@ -1,6 +1,6 @@
 // Port of python/scan130.py.
-import { re, search, finditer, findall, fullmatch, countChar, strip as pyStrip } from './pyre.js?v=202610302343';
-import { parse, strip, preprocess, nocomment, definesFor } from './enfparse.js?v=202610302343';
+import { re, search, finditer, findall, fullmatch, countChar, strip as pyStrip } from './pyre.js?v=202611031832';
+import { parse, strip, preprocess, nocomment, definesFor } from './enfparse.js?v=202611031832';
 
 const LEVELS = ['BREAK', 'RISK', 'INFO'];
 
@@ -84,18 +84,7 @@ const IDENT = re('\\b[A-Za-z_]\\w*\\b');
 const SKIP_IN_DEBUG_SPAWN = new Set(['CreateInInventory now refuses items that do not fit (no log line)']);
 const DEBUG_SPAWN = re('\\bOnDebugSpawn\\s*\\([^)]*\\)\\s*\\{');
 
-const SCRIPT_PATH_MSG = 'CfgMods script path with backslashes: 1.30 compiles none of these scripts, silently, and other ' +
-  'loaded code uses what they declare, so the module fails to compile';
-const SKIP_LOST_MSG = 'CfgMods script path with backslashes: 1.30 compiles none of these scripts, silently, so what they do is ' +
-  'lost (nothing else uses them, so it still compiles)';
-const SKIP_EMPTY_MSG = 'CfgMods script path with backslashes points at a folder with no scripts: 1.30 skips it, and nothing is lost';
-const SKIP_STUB_MSG = 'CfgMods script path with backslashes: 1.30 skips these scripts, but they are only empty classes, so those ' +
-  "objects use their config parent's script and nothing is lost";
-const OTHER_PATH_INFO = "CfgMods script path with backslashes into another mod's folder: 1.30 skips the entry, but this PBO's " +
-  "scripts have no #ifdef, so they don't depend on that mod (it loads its own scripts)";
 const TOP_DECL = re('^\\s*(?:enum\\s+(\\w+)|typedef\\s+[\\w<>, ]+?\\s+(\\w+)\\s*;)', 'M');
-const EMPTY_ONLY = '(?:\\s*class\\s+\\w+\\s*(?::|extends)\\s*\\w+\\s*\\{\\s*\\}\\s*;?)*\\s*';
-const IFDEF = re('^\\s*#\\s*ifn?def\\b', 'M');
 const CORE_DIR = re('(^|/)1_core/', 'I');
 const CORE_GATE = re('^[ \\t]*#[ \\t]*ifn?def[ \\t]+DAYZ_1_\\d+\\b', 'M');
 const CORE_GATE_MSG = 'version gate (#ifdef/#ifndef DAYZ_1_xx) in a 1_Core script: the version defines are not set yet ' +
@@ -120,16 +109,6 @@ const moduleRank = (rel) => {
   const m = search(MODULE_DIR, rel);
   return m ? Number(m[1]) : null;
 };
-
-// Whether s uses name where only a type can stand (a variable of that name doesn't count).
-function typeUse(s, n) {
-  return search(re('(?<![\\w.])' + n + '\\s+[A-Za-z_]\\w*\\s*[;=,)(\\[]' +
-    '|\\b(?:new|extends|ref|autoptr|class)\\s+' + n + '\\b' +
-    '|[:<,]\\s*' + n + '\\s*[>,{]' +
-    '|(?<![\\w.])' + n + '\\s*\\.\\s*Cast(?:To)?\\s*\\('), s) !== null;
-}
-const OTHER_PATH_MSG = "CfgMods script path with backslashes into another mod's folder: 1.30 skips the entry, so code that " +
-  "needs that mod's scripts (often its #define for optional support) can compile out";
 
 function debugSpans(src) {
   const spans = [];
@@ -227,21 +206,11 @@ function typeFits(t, p) {
 const sigFits = (types, params, req) =>
   req <= types.length && types.length <= params.length && types.every((t, i) => typeFits(t, params[i]));
 
-function ownsPath(pbos, path) {
-  const norm = (s) => s.replace(/\\/g, '/').replace(/^\/+|\/+$/g, '').toLowerCase();
-  const p = norm(path);
-  return pbos.some((pb) => {
-    const pre = norm(pb.prefix || pb.name.slice(0, -4));
-    return pre && (p === pre || p.startsWith(pre + '/'));
-  });
-}
-
 export const CHECK_COUNTS = { patterns: PATTERNS.length + RAW_PATTERNS.length + 1 };
 
 export function makeScanner(vanilla) {
   const A = toIndex(vanilla.previous);
   const B = toIndex(vanilla.stable);
-  const ALL130 = names(B);
 
   const STABLE_DEFS = definesFor(vanilla.versions.stable);
   // gates on stable's or a newer (Exp) version define: they only fit that one build
@@ -616,7 +585,6 @@ export function makeScanner(vanilla) {
   }
 
   function scan(mods, progress) {
-    // Script folders 1.30 skips (backslash paths): graded by what they hold and whether other code needs it.
     const decls = new Map(); // rel -> [type names, Map(modded class -> members it adds)]
     const texts = new Map();
     const fileDecls = (f) => {
@@ -644,50 +612,6 @@ export function makeScanner(vanilla) {
         texts.set(f.rel, s);
       }
       return decls.get(f.rel);
-    };
-    const norm = (s) => s.replace(/\\/g, '/').replace(/^\/+|\/+$/g, '').toLowerCase();
-    const folderFiles = (m, path) => {
-      const p = norm(path);
-      for (const pb of m.pbos) {
-        const pre = norm(pb.prefix || pb.name.slice(0, -4));
-        if (pre && (p === pre || p.startsWith(pre + '/'))) {
-          const sub = p.slice(pre.length).replace(/^\/+|\/+$/g, '');
-          return m.files.filter((f) => f.pbo.toLowerCase() === pb.name.toLowerCase() && (!sub || norm(f.name).startsWith(sub + '/')));
-        }
-      }
-      return [];
-    };
-    const isScriptPath = (sp) => sp.module && sp.module.toLowerCase().endsWith('scriptmodule');
-    const skipped = new Set();
-    for (const m of mods) for (const sp of m.scriptPaths) if (isScriptPath(sp) && ownsPath(m.pbos, sp.path)) for (const f of folderFiles(m, sp.path)) skipped.add(f.rel);
-    const skippedFolder = (m, path) => {
-      const fs = folderFiles(m, path);
-      if (!fs.length) return ['INFO', SKIP_EMPTY_MSG, ''];
-      const mine = new Set(fs.map((f) => f.rel));
-      const types = new Set();
-      const members = new Map();
-      for (const f of fs) {
-        const [t, mm] = fileDecls(f);
-        for (const x of t) types.add(x);
-        for (const [k, v] of mm) {
-          if (!members.has(k)) members.set(k, new Set());
-          for (const x of v) members.get(k).add(x);
-        }
-      }
-      const others = mods.flatMap((m2) => m2.files).filter((f) => !mine.has(f.rel) && !skipped.has(f.rel));
-      for (const f of others) for (const x of fileDecls(f)[0]) types.delete(x);
-      for (const x of ALL130) types.delete(x);
-      // a member a modded class adds counts only when used through the class name (ParticleList.x)
-      const uses = [...members].filter(([, v]) => v.size).map(([k, v]) => re('\\b' + k + '\\s*\\.\\s*(' + [...v].sort().join('|') + ')\\b'));
-      for (const f of others) {
-        const s = texts.get(f.rel);
-        const toks = new Set(findall(IDENT, s));
-        let used = [...types].filter((t) => toks.has(t) && typeUse(s, t));
-        if (!used.length) used = uses.map((u) => search(u, s)).filter((x) => x).map((x) => x[1]);
-        if (used.length) return ['BREAK', SCRIPT_PATH_MSG, ' (' + f.rel + ' uses ' + used.sort()[0] + ')'];
-      }
-      if (fs.every((f) => fullmatch(EMPTY_ONLY, strip(f.text)))) return ['INFO', SKIP_STUB_MSG, ''];
-      return ['RISK', SKIP_LOST_MSG, ''];
     };
 
     // Variables named like a class another scanned mod declares ("Variable name '...' already used as type name").
@@ -729,17 +653,6 @@ export function makeScanner(vanilla) {
     mods.forEach((m, k) => {
       if (progress) progress(k, mods.length, m.mod);
       const r = m.files.length ? scanFiles(m.files) : Object.fromEntries(LEVELS_ALL.map((l) => [l, {}]));
-      for (const sp of m.scriptPaths) {
-        if (isScriptPath(sp)) {
-          const where = sp.pbo + ': ' + sp.module + ' = ' + sp.path;
-          let level, msg, detail = '';
-          if (ownsPath(m.pbos, sp.path)) [level, msg, detail] = skippedFolder(m, sp.path);
-          else if (m.files.some((f) => f.pbo === sp.pbo && search(IFDEF, f.text))) [level, msg] = ['RISK', OTHER_PATH_MSG];
-          else [level, msg] = ['INFO', OTHER_PATH_INFO];
-          if (!r[level][msg]) r[level][msg] = [];
-          r[level][msg].push(where + detail);
-        }
-      }
       for (const [level, where] of nameClashes(m)) {
         const msg = level === 'BREAK' ? NAME_CLASH_MSG : NAME_CLASH_RISK;
         if (!r[level][msg]) r[level][msg] = [];

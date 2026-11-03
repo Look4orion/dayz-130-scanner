@@ -1,7 +1,6 @@
 """Static scan of mod scripts against the vanilla diff from the previous to the current stable build.
 Usage: scan130.py vanilla.json --pbo mods.tsv <mods root> <out.json>   (reads the PBOs directly)
-   or: scan130.py vanilla.json <modsrc dir> <out.json> [mods.tsv <mods root>]   (extract.py output)
-With mods.tsv and the mods root, CfgMods script paths are checked too."""
+   or: scan130.py vanilla.json <modsrc dir> <out.json>   (extract.py output)"""
 import sys, os, json, re, glob
 sys.path.insert(0, os.path.dirname(__file__))
 from enfparse import parse, strip, preprocess, nocomment, call_args, call_types, sig_fits, defines_for
@@ -13,7 +12,7 @@ if sys.argv[2] == '--pbo':
     PATHS = sys.argv[3:5]
 else:
     SRC, OUT = sys.argv[2], sys.argv[3]
-    PATHS = sys.argv[4:6] if len(sys.argv) >= 6 else None
+    PATHS = None
 
 
 def chain(ix, name, seen=None):
@@ -153,7 +152,6 @@ if 'exp' in V and ver(V['versions']['exp']) > ver(V['versions']['stable']):
     AHEAD = Delta(V['exp'], B, extras('stable'), STABLE.label)
     AHEAD_WHO = 'which only Exp %s has, but stable %s compiles this code too' % (V['versions']['exp'], V['versions']['stable'])
 LEVELS = ('BREAK', 'RISK', 'INFO') + (('BREAK_EXP', 'RISK_EXP', 'INFO_EXP') if EXP else ())
-ALL130 = STABLE.all_new
 # Obsolete overrides with their own, more specific note in PATTERNS.
 OBS_NOTED = {'OnCEUpdate', 'CreateFrontLight', 'CreateRearLight', 'GetNoiseReduction', 'GetNoiseReductionByWeather'}
 
@@ -204,18 +202,7 @@ IDENT = re.compile(r'\b[A-Za-z_]\w*\b')
 # Only an admin's debug spawn runs these, and the parts go to attachment slots.
 SKIP_IN_DEBUG_SPAWN = {'CreateInInventory now refuses items that do not fit (no log line)'}
 DEBUG_SPAWN = re.compile(r'\bOnDebugSpawn\s*\([^)]*\)\s*\{')
-SCRIPT_PATH_MSG = ('CfgMods script path with backslashes: 1.30 compiles none of these scripts, silently, and other '
-                   'loaded code uses what they declare, so the module fails to compile')
-SKIP_LOST_MSG = ('CfgMods script path with backslashes: 1.30 compiles none of these scripts, silently, so what they do is '
-                 'lost (nothing else uses them, so it still compiles)')
-SKIP_EMPTY_MSG = 'CfgMods script path with backslashes points at a folder with no scripts: 1.30 skips it, and nothing is lost'
-SKIP_STUB_MSG = ("CfgMods script path with backslashes: 1.30 skips these scripts, but they are only empty classes, so those "
-                 "objects use their config parent's script and nothing is lost")
-OTHER_PATH_INFO = ("CfgMods script path with backslashes into another mod's folder: 1.30 skips the entry, but this PBO's "
-                   "scripts have no #ifdef, so they don't depend on that mod (it loads its own scripts)")
 TOP_DECL = re.compile(r'^\s*(?:enum\s+(\w+)|typedef\s+[\w<>, ]+?\s+(\w+)\s*;)', re.M)
-EMPTY_ONLY = re.compile(r'^(?:\s*class\s+\w+\s*(?::|extends)\s*\w+\s*\{\s*\}\s*;?)*\s*$')
-IFDEF = re.compile(r'^\s*#\s*ifn?def\b', re.M)
 CORE_DIR = re.compile(r'(^|/)1_core/', re.I)
 CORE_GATE = re.compile(r'^[ \t]*#[ \t]*ifn?def[ \t]+DAYZ_1_\d+\b', re.M)
 CORE_GATE_MSG = ('version gate (#ifdef/#ifndef DAYZ_1_xx) in a 1_Core script: the version defines are not set yet '
@@ -227,8 +214,6 @@ STRING = re.compile(r'"(?:[^"\\\n]|\\.)*"')
 CROSS_CALL = re.compile(r'\.\s*Cross\s*\(')
 CROSS_MSG = ('calls vector.Cross(), which 1.30.164078 added and 1.30.164200 removed again: the module does not '
              'compile (write the cross product out)')
-OTHER_PATH_MSG = ("CfgMods script path with backslashes into another mod's folder: 1.30 skips the entry, so code that "
-                  "needs that mod's scripts (often its #define for optional support) can compile out")
 
 
 def debug_spans(src):
@@ -243,15 +228,6 @@ def debug_spans(src):
             i += 1
         spans.append((m.start(), i))
     return spans
-
-
-def owns_path(pbos, path):
-    p = path.replace('\\', '/').strip('/').lower()
-    for pb, note in pbos.items():
-        pre = (note.get('prefix') or pb[:-4]).replace('\\', '/').strip('/').lower()
-        if pre and (p == pre or p.startswith(pre + '/')):
-            return True
-    return False
 
 
 def load(raw):
@@ -524,14 +500,6 @@ else:
                 with open(f, 'rb') as fh:
                     FILES[n].append((os.path.relpath(f, SRC).replace('\\', '/'), text(fh.read())))
 
-SCRIPT_PATHS = {}
-if PATHS:
-    from modpaths import backslash_paths
-    for line in open(PATHS[0], encoding='utf-8'):
-        if line.strip():
-            n, kind, m = (x.strip() for x in line.rstrip('\n').split('\t'))
-            SCRIPT_PATHS[n] = backslash_paths(os.path.join(PATHS[1], m))
-
 DECLS = {}  # rel -> (type names the file declares, {modded class: members it adds})
 TEXTS = {}
 
@@ -556,57 +524,6 @@ def file_decls(rel, src):
         DECLS[rel] = (types, members)
         TEXTS[rel] = s
     return DECLS[rel]
-
-
-def type_use(s, name):
-    """Whether s uses name where only a type can stand (a variable of that name doesn't count)."""
-    n = re.escape(name)
-    return bool(re.search(r'(?<![\w.])' + n + r'\s+[A-Za-z_]\w*\s*[;=,)(\[]'
-                          r'|\b(?:new|extends|ref|autoptr|class)\s+' + n + r'\b'
-                          r'|[:<,]\s*' + n + r'\s*[>,{]'
-                          r'|(?<![\w.])' + n + r'\s*\.\s*Cast(?:To)?\s*\(', s))
-
-
-def folder_files(n, pbos, path):
-    """The scanned scripts under a CfgMods script path."""
-    p = path.replace('\\', '/').strip('/').lower()
-    for pb, note in pbos.items():
-        pre = (note.get('prefix') or pb[:-4]).replace('\\', '/').strip('/').lower()
-        if pre and (p == pre or p.startswith(pre + '/')):
-            head = (n + '/' + pb + '/').lower()
-            sub = p[len(pre):].strip('/')
-            return [(rel, src) for rel, src in FILES[n] if rel.lower().startswith(head)
-                    and (not sub or rel[len(head):].lower().startswith(sub + '/'))]
-    return []
-
-
-def skipped_folder(n, pbos, path, skipped):
-    """Grade a script folder 1.30 skips: (level, message, detail)."""
-    fs = folder_files(n, pbos, path)
-    if not fs:
-        return 'INFO', SKIP_EMPTY_MSG, ''
-    mine = {rel for rel, _ in fs}
-    types, members = set(), {}
-    for rel, src in fs:
-        t, m = file_decls(rel, src)
-        types |= t
-        for k, v in m.items():
-            members.setdefault(k, set()).update(v)
-    others = [(rel, src) for fs2 in FILES.values() for rel, src in fs2 if rel not in mine and rel not in skipped]
-    for rel, src in others:
-        types -= file_decls(rel, src)[0]
-    types -= VANILLA_NAMES
-    # a member a modded class adds counts only when used through the class name (ParticleList.x)
-    uses = [re.compile(r'\b' + k + r'\s*\.\s*(' + '|'.join(sorted(v)) + r')\b') for k, v in members.items() if v]
-    for rel, src in others:
-        used = {t for t in types & set(IDENT.findall(TEXTS[rel])) if type_use(TEXTS[rel], t)}
-        if not used:
-            used = {m.group(1) for u in uses for m in [u.search(TEXTS[rel])] if m}
-        if used:
-            return 'BREAK', SCRIPT_PATH_MSG, ' (' + rel + ' uses ' + sorted(used)[0] + ')'
-    if all(EMPTY_ONLY.match(strip(src)) for _, src in fs):
-        return 'INFO', SKIP_STUB_MSG, ''
-    return 'RISK', SKIP_LOST_MSG, ''
 
 
 WORKBENCH_DIR = re.compile(r'(?:^|/)workbench/', re.I)
@@ -662,24 +579,9 @@ def name_clashes(n):
 
 
 report = {}
-_skips =[(n, pbo, mod_, path) for n in manifest for pbo, mod_, path in SCRIPT_PATHS.get(n, [])
-          if mod_ and mod_.lower().endswith('scriptmodule')]
-SKIPPED = {rel for n, _, _, path in _skips if owns_path(manifest[n]['pbos'], path)
-           for rel, _ in folder_files(n, manifest[n]['pbos'], path)}
-VANILLA_NAMES = ALL130
 for n, info in manifest.items():
     files = FILES[n]
     r = scan_files(files) if files else {lv: {} for lv in LEVELS}
-    for pbo, mod_, path in SCRIPT_PATHS.get(n, []):
-        if mod_ and mod_.lower().endswith('scriptmodule'):
-            where = pbo + ': ' + mod_ + ' = ' + path
-            if owns_path(info['pbos'], path):
-                level, msg, detail = skipped_folder(n, info['pbos'], path, SKIPPED)
-                r[level].setdefault(msg, []).append(where + detail)
-            elif any(rel.lower().startswith((n + '/' + pbo + '/').lower()) and IFDEF.search(src) for rel, src in files):
-                r['RISK'].setdefault(OTHER_PATH_MSG, []).append(where)
-            else:
-                r['INFO'].setdefault(OTHER_PATH_INFO, []).append(where)
     for level, where in name_clashes(n):
         r[level].setdefault(NAME_CLASH_MSG if level == 'BREAK' else NAME_CLASH_RISK, []).append(where)
     r['unscanned_pbos'] = [k for k, p in info['pbos'].items() if p['unreadable']]

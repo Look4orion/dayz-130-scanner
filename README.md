@@ -66,19 +66,6 @@ mod's own, keep both branches). Comments are ignored.
   CarPack's `class c7`). `RISK` when a module can't be told from the path. Workbench plugins are
   skipped.
 - **Methods 1.30 made protected** (`RISK`), called from outside the class.
-- **CfgMods script paths with backslashes**: 1.30 compiles none of that folder's scripts and logs
-  nothing. Only `*ScriptModule` entries count; image sets with backslashes still load. The grade
-  depends on what the skipped folder holds:
-  - `BREAK` when other loaded code (this mod or another scanned one) uses a class, enum or typedef
-    declared there, or a member a `modded class` there adds, through the class name
-    (`ParticleList.x`): the module fails to compile. The finding names the file and the name.
-  - `RISK` when the folder has code nothing else uses: it still compiles, but what it does is lost.
-  - `INFO` when the folder has no scripts, or only empty classes (`class X : Y {};`), whose objects
-    fall back to their config parent's script.
-  A backslash path into *another* mod's folder (one not under any of this mod's PBO prefixes) is
-  `RISK` when that PBO's scripts use `#ifdef`: mods list another mod's folder to pick up its
-  `#define` for optional support, so on 1.30 that support can compile out. Without `#ifdef` it is
-  `INFO`: the other mod loads its own scripts.
 - **Methods 1.30 marks `[Obsolete]`** (they still compile). An override is `RISK` when 1.30 vanilla
   no longer calls that method (with that argument count), because the override never runs. A call
   is `RISK` when 1.30 left the method as a placeholder (empty, or returning a constant) and the mod
@@ -104,7 +91,7 @@ experimental build has, or an override of a method only it has, is `BREAK`; a us
 method or field is `RISK`. This is code whose version gate (or lack of one) lets stable compile it.
 
 The other checks above (known patterns, Workbench classes,
-version gates, backslash paths, name clashes between mods) run for stable only.
+version gates, name clashes between mods) run for stable only.
 
 A method or field a mod declares in any of its own files counts as the mod's own, so calling it is
 never mistaken for the vanilla name (overrides don't count: a call may still reach vanilla's).
@@ -129,14 +116,13 @@ Python 3, no packages to install. Run each script with `python -I`.
    ```
    python -I python/scan130.py docs/vanilla.json --pbo mods.tsv <mods folder> scan.json
    ```
-   `scan.json` lists, per mod, the hits by level with file and line, including the CfgMods script
-   path check.
+   `scan.json` lists, per mod, the hits by level with file and line.
 
 To read the code behind a hit, `extract.py` writes the scripts to a folder (keep it separate: they are
 third-party code). `scan130.py` can also scan that folder, as it did before `--pbo`:
 ```
 python -I python/extract.py mods.tsv <mods folder> modsrc
-python -I python/scan130.py docs/vanilla.json modsrc scan.json mods.tsv <mods folder>
+python -I python/scan130.py docs/vanilla.json modsrc scan.json
 ```
 
 Also included: `python/deps.py` (mod-to-mod dependencies from `requiredAddons`), `python/modpaths.py`
