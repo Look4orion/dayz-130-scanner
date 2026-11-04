@@ -1,6 +1,6 @@
 // Port of python/scan130.py.
-import { re, search, finditer, findall, fullmatch, countChar, strip as pyStrip } from './pyre.js?v=202611040127';
-import { parse, strip, preprocess, nocomment, definesFor } from './enfparse.js?v=202611040127';
+import { re, search, finditer, findall, fullmatch, countChar, strip as pyStrip } from './pyre.js?v=202611040302';
+import { parse, strip, preprocess, nocomment, definesFor } from './enfparse.js?v=202611040302';
 
 const LEVELS = ['BREAK', 'RISK', 'INFO'];
 
@@ -327,6 +327,12 @@ export function makeScanner(vanilla) {
   // types stable declares only under #ifdef WORKBENCH (left out of its index): their own check
   const WB_ONLY = new Set((vanilla.workbench || {}).stable || []);
   const STABLE = makeDelta(A, B, extras('stable'), vanilla.versions.stable.split('.').slice(0, 2).join('.'), WB_ONLY);
+  // A hotfix's own changes (the stable build it replaced -> stable), reported like stable's under the full build
+  // number: what the hotfix removed or changed that the build before it had, but 'previous' never did.
+  const HOTFIX = vanilla.hotfix && ver(vanilla.versions.hotfix).slice(0, 2).join('.') === ver(vanilla.versions.stable).slice(0, 2).join('.')
+      && newer(vanilla.versions.stable, vanilla.versions.hotfix)
+    ? makeDelta(toIndex(vanilla.hotfix), B, extras('stable'), vanilla.versions.stable, WB_ONLY, (vanilla.obsolete || {}).hotfix || [])
+    : null;
   const EXP = vanilla.exp && newer(vanilla.versions.exp, vanilla.versions.stable)
     ? makeDelta(B, toIndex(vanilla.exp), extras('exp'), 'Exp ' + vanilla.versions.exp, new Set(), (vanilla.obsolete || {}).stable || [])
     : null;
@@ -575,6 +581,12 @@ export function makeScanner(vanilla) {
       }
 
       diffChecks(STABLE, rel, src30, cls, modclasses, modOwn, modOverrides, add);
+      if (HOTFIX) {
+        // the same finding from the comparison with 'previous' is already there
+        diffChecks(HOTFIX, rel, src30, cls, modclasses, modOwn, modOverrides, (level, msg, where) => {
+          if (!(res[level][msg.split(HOTFIX.label).join(STABLE.label)] || []).includes(where)) add(level, msg, where);
+        });
+      }
       if (EXP) {
         aheadChecks(rel, src30, cls, modclasses, modOwn, add);
         const [srcExp, clsExp] = p.load.exp;

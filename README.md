@@ -79,6 +79,12 @@ mod's own, keep both branches). Comments are ignored.
   overrides the current overload, or the replacement the `[Obsolete]` message names
   (`IsVitalTruckBattery` → `NeedElectricitySourceDevice`).
 
+**Stable hotfixes** (`BREAK`, `RISK`, `INFO`), while the index holds the stable build a hotfix replaced: the
+overrides, name-clash, removed-use, protected and `[Obsolete]` checks above, comparing that build with stable, so
+code written for the build before the hotfix is checked too. Messages name the full build (`removed in
+1.30.164289`). A finding the comparison with the previous version already reports isn't repeated, and only methods
+the hotfix newly marks `[Obsolete]` count.
+
 **Experimental** (`BREAK_EXP`, `RISK_EXP`, `INFO_EXP`), only while the vanilla index holds an
 experimental build newer than stable: the overrides, name-clash, removed-use, protected and
 `[Obsolete]` checks above, comparing the experimental build with stable. Only methods the
@@ -131,17 +137,19 @@ declare; needs the vanilla config files unpacked).
 ## The vanilla index
 
 `docs/vanilla.json` holds the names and signatures of the vanilla classes, methods and fields (no
-code) of up to three builds, by role: `stable` (the current stable build), `previous` (the build
-stable is compared against) and `exp` (the open experimental build, when there is one newer than
+code) of up to four builds, by role: `stable` (the current stable build), `previous` (the build
+stable is compared against), `hotfix` (the stable build the current one replaced, when that was a
+hotfix of the same version) and `exp` (the open experimental build, when there is one newer than
 stable). `versions` names the build in each role. A build is read from the `scripts.pbo` in that
 install's `dta` folder (server or client), or an unpacked scripts folder.
 
 ## Updating for a new DayZ build
 
 1. Update the data, by what changed:
-   - **Stable hotfix** (same major.minor): `python -I python/vanilla.py set docs/vanilla.json stable <dta/scripts.pbo> <version>`
+   - **Stable hotfix** (same major.minor): `python -I python/vanilla.py set docs/vanilla.json stable <dta/scripts.pbo> <version>`.
+     The old stable becomes `hotfix`, replacing the one before.
    - **New stable** (an Exp went stable): `python -I python/vanilla.py rotate docs/vanilla.json <stable dta/scripts.pbo> <version>`.
-     The old stable becomes `previous`, and `exp` is cleared.
+     The old stable becomes `previous`, and `hotfix` and `exp` are cleared.
    - **New Exp**: `python -I python/vanilla.py set docs/vanilla.json exp <exp dta/scripts.pbo> <version>`.
      It refuses a build that isn't newer than stable.
    - **Exp closed, or only mirroring stable**: `python -I python/vanilla.py clear-exp docs/vanilla.json`

@@ -144,6 +144,11 @@ def ver(s):
 # Types stable declares only under #ifdef WORKBENCH (vanilla.py leaves them out of its index): their own check.
 WB_ONLY = set(V.get('workbench', {}).get('stable', []))
 STABLE = Delta(A, B, extras('stable'), '.'.join(V['versions']['stable'].split('.')[:2]), WB_ONLY)
+# A hotfix's own changes (the stable build it replaced -> stable), reported like stable's under the full build
+# number: what the hotfix removed or changed that the build before it had, but 'previous' never did.
+HOTFIX = None
+if 'hotfix' in V and ver(V['versions']['hotfix'])[:2] == ver(V['versions']['stable'])[:2] and ver(V['versions']['hotfix']) < ver(V['versions']['stable']):
+    HOTFIX = Delta(V['hotfix'], B, extras('stable'), V['versions']['stable'], WB_ONLY, old_obsolete=extras('hotfix')['obsolete'])
 EXP = None
 if 'exp' in V and ver(V['versions']['exp']) > ver(V['versions']['stable']):
     EXP = Delta(B, V['exp'], extras('exp'), 'Exp ' + V['versions']['exp'], old_obsolete=extras('stable')['obsolete'])
@@ -473,6 +478,12 @@ def scan_files(files):
                 add(level, msg, rel + ':' + str(src30.count('\n', 0, m.start()) + 1))
 
         diff_checks(STABLE, rel, src30, cls, modclasses, mod_own, mod_overrides, add)
+        if HOTFIX:
+            def add_hotfix(level, msg, where):
+                # the same finding from the comparison with 'previous' is already there
+                if where not in res[level].get(msg.replace(HOTFIX.label, STABLE.label), ()):
+                    add(level, msg, where)
+            diff_checks(HOTFIX, rel, src30, cls, modclasses, mod_own, mod_overrides, add_hotfix)
         if EXP:
             ahead_checks(rel, src30, cls, modclasses, mod_own, add)
             src_exp, cls_exp = p['exp']

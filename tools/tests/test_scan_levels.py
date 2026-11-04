@@ -197,6 +197,48 @@ def test_exp_only_names_behind_exp_gate_pass():
     assert any('which only Exp 1.31.1 has' in m for m in r['BREAK']), r['BREAK']
 
 
+HOTFIX_REMOVED = '''
+modded class ConstructionPart
+{
+    override bool CanSimulateItemFalling()
+    {
+        return false;
+    }
+}
+'''
+HOTFIX_AND_STABLE = '''
+modded class Land_WarheadStorage_Main
+{
+    override bool CanDoorBeOpened(int doorIndex, bool checkIfLocked = false)
+    {
+        return true;
+    }
+}
+'''
+
+
+def test_hotfix_reports_what_the_hotfix_removed():
+    r = scan(HOTFIX_REMOVED)
+    assert 'overrides ConstructionPart.CanSimulateItemFalling() which no longer exists in 1.30.164289' in r['BREAK'], r['BREAK']
+    assert not any('1.29' in m or '164200' in m for lv in levels(r) for m in r[lv]), r
+
+
+def test_hotfix_does_not_repeat_a_stable_hit():
+    r = scan(HOTFIX_AND_STABLE)
+    hits = [(m, w) for m, ws in r['BREAK'].items() for w in ws if 'CanDoorBeOpened' in m]
+    assert len(hits) == 1, r['BREAK']
+
+
+def test_no_hotfix_data_no_hotfix_hits():
+    v = json.load(open(VANILLA))
+    v.pop('hotfix', None)
+    v['versions'].pop('hotfix', None)
+    p = os.path.join(tempfile.mkdtemp(), 'v.json')
+    json.dump(v, open(p, 'w'))
+    r = scan(HOTFIX_REMOVED, p)
+    assert not any('CanSimulateItemFalling' in m for m in r['BREAK']), r['BREAK']
+
+
 if __name__ == '__main__':
     for n, f in list(globals().items()):
         if n.startswith('test_'):

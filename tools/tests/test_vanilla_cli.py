@@ -77,6 +77,42 @@ def test_rotate_refuses_same_minor():
     assert json.load(open(p))['versions']['previous'] == '1.29.163709'
 
 
+def test_set_stable_hotfix_keeps_old_stable_as_hotfix():
+    p = converted()
+    code, msg = run('set', p, 'stable', scripts(tmp(), 'class B {};'), '1.30.164289')
+    assert code == 0, msg
+    v = json.load(open(p))
+    assert v['versions'] == {'previous': '1.29.163709', 'hotfix': '1.30.164200', 'stable': '1.30.164289'}, v['versions']
+    assert v['hotfix'] == OLD['130'] and 'B' in v['stable'] and v['workbench']['hotfix'] == ['W']
+
+
+def test_set_stable_same_version_keeps_hotfix():
+    p = converted()
+    run('set', p, 'stable', scripts(tmp(), 'class B {};'), '1.30.164289')
+    code, msg = run('set', p, 'stable', scripts(tmp(), 'class C {};'), '1.30.164289')
+    assert code == 0, msg
+    v = json.load(open(p))
+    assert v['versions']['hotfix'] == '1.30.164200' and v['hotfix'] == OLD['130'], v['versions']
+
+
+def test_rotate_drops_hotfix():
+    p = converted()
+    run('set', p, 'stable', scripts(tmp(), 'class B {};'), '1.30.164289')
+    code, msg = run('rotate', p, scripts(tmp(), 'class C {};'), '1.31.165100')
+    assert code == 0, msg
+    v = json.load(open(p))
+    assert v['versions'] == {'previous': '1.30.164289', 'stable': '1.31.165100'}, v['versions']
+    assert 'hotfix' not in v and all('hotfix' not in v[k] for k in EXTRAS)
+
+
+def test_set_hotfix_refuses_not_older_or_other_minor():
+    p = converted()
+    for bad in ('1.30.164200', '1.30.164300', '1.29.163709'):
+        code, msg = run('set', p, 'hotfix', scripts(tmp(), 'class B {};'), bad)
+        assert code != 0 and bad in msg, (bad, code, msg)
+    assert 'hotfix' not in json.load(open(p))
+
+
 if __name__ == '__main__':
     for n, f in list(globals().items()):
         if n.startswith('test_'):

@@ -1,7 +1,9 @@
-"""vanilla.json: the vanilla scripts of each build the scanner compares, by role (previous, stable, exp).
+"""vanilla.json: the vanilla scripts of each build the scanner compares, by role (previous, hotfix, stable, exp).
+hotfix is the stable build a hotfix replaced: set stable to a newer build of the same major.minor and the old
+stable moves there, so the scanner also sees what the hotfix removed or changed.
 A build's scripts are its dta/scripts.pbo or an unpacked scripts folder.
-Usage: vanilla.py set <vanilla.json> <previous|stable|exp> <scripts> <version>
-       vanilla.py rotate <vanilla.json> <new stable scripts> <version>   (stable -> previous, exp cleared)
+Usage: vanilla.py set <vanilla.json> <previous|hotfix|stable|exp> <scripts> <version>
+       vanilla.py rotate <vanilla.json> <new stable scripts> <version>   (stable -> previous, hotfix and exp cleared)
        vanilla.py clear-exp <vanilla.json>
        vanilla.py convert <old 129/130 vanilla.json> <out.json>"""
 import sys, os, json, glob, re
@@ -108,7 +110,7 @@ def index(root):
             sorted(wb - game))
 
 
-ROLES = ('previous', 'stable', 'exp')
+ROLES = ('previous', 'hotfix', 'stable', 'exp')
 EXTRAS = ('workbench', 'obsolete', 'obsoleteDefs', 'obsoleteCalls', 'obsoleteUse')
 
 
@@ -167,9 +169,14 @@ def main():
         if role not in ROLES:
             sys.exit('role must be one of ' + ', '.join(ROLES))
         v = json.load(open(path))
-        if role == 'exp' and ver(version) <= ver(v['versions']['stable']):
-            sys.exit('exp %s is not newer than stable %s' % (version, v['versions']['stable']))
+        stable = v['versions']['stable']
+        if role == 'exp' and ver(version) <= ver(stable):
+            sys.exit('exp %s is not newer than stable %s' % (version, stable))
+        if role == 'hotfix' and not (ver(version)[:2] == ver(stable)[:2] and ver(version) < ver(stable)):
+            sys.exit('hotfix %s must be an older build of the same major.minor as stable %s' % (version, stable))
         data, extras = build(root)
+        if role == 'stable' and ver(version)[:2] == ver(stable)[:2] and ver(version) > ver(stable):
+            put(v, 'hotfix', v['stable'], {k: v[k]['stable'] for k in EXTRAS if 'stable' in v.get(k, {})}, stable)
         put(v, role, data, extras, version)
         save(v, path)
     elif cmd == 'rotate':
@@ -180,6 +187,7 @@ def main():
         data, extras = build(root)
         put(v, 'previous', v['stable'], {k: v[k]['stable'] for k in EXTRAS if 'stable' in v.get(k, {})}, v['versions']['stable'])
         put(v, 'stable', data, extras, version)
+        drop(v, 'hotfix')
         drop(v, 'exp')
         save(v, path)
     elif cmd == 'clear-exp':
