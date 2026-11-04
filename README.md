@@ -125,8 +125,7 @@ python -I python/extract.py mods.tsv <mods folder> modsrc
 python -I python/scan130.py docs/vanilla.json modsrc scan.json
 ```
 
-Also included: `python/deps.py` (mod-to-mod dependencies from `requiredAddons`), `python/modpaths.py`
-(every backslash script path), and `python/hiddendeps.py` (dependencies a mod uses but doesn't
+Also included: `python/deps.py` (mod-to-mod dependencies from `requiredAddons`) and `python/hiddendeps.py` (dependencies a mod uses but doesn't
 declare; needs the vanilla config files unpacked).
 
 ## The vanilla index
