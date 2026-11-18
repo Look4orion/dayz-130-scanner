@@ -1,6 +1,6 @@
 // Port of python/scan130.py.
-import { re, search, finditer, findall, fullmatch, countChar, strip as pyStrip } from './pyre.js?v=202611040302';
-import { parse, strip, preprocess, nocomment, definesFor } from './enfparse.js?v=202611040302';
+import { re, search, finditer, findall, fullmatch, countChar, strip as pyStrip } from './pyre.js?v=202611182257';
+import { parse, strip, preprocess, nocomment, definesFor } from './enfparse.js?v=202611182257';
 
 const LEVELS = ['BREAK', 'RISK', 'INFO'];
 
