@@ -1,5 +1,5 @@
 // Port of python/enfparse.py.
-import { re, search, finditer, findall, fullmatch, strip as pstrip, lstrip, splitWs, countChar } from './pyre.js?v=202611182257';
+import { re, search, finditer, findall, fullmatch, strip as pstrip, lstrip, splitWs, countChar } from './pyre.js?v=202611190021';
 
 const MODS = new Set(['override', 'static', 'proto', 'native', 'private', 'protected', 'event', 'external', 'volatile',
   'owned', 'ref', 'reference', 'notnull', 'const', 'autoptr', 'sealed', 'modded', 'extern']);
@@ -171,9 +171,11 @@ function addMethod(cur, text) {
   const ret = pre.filter((t) => !MODS.has(t) && t !== ']' && t !== '[');
   let list = cur.methods.get(mm[2]);
   if (!list) cur.methods.set(mm[2], (list = []));
+  const raw = splitTop(mm[3]).filter((p) => pstrip(p));
   list.push({
     ret: ret.join(' ').toLowerCase(),
-    params: splitTop(mm[3]).filter((p) => pstrip(p)).map(normParam),
+    params: raw.map(normParam),
+    req: raw.filter((p) => !p.includes('=')).length,
     override: pre.includes('override'),
     static: pre.includes('static'),
     obsolete: Boolean(search(OBS, head)),

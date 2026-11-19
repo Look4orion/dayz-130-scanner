@@ -105,6 +105,25 @@ class Delta:
                     if live:
                         self.live_class.setdefault(m, cn)
 
+        # Methods whose parameter lists changed: name -> ("Class.method", [(old params, req) gone in new]).
+        # A call that fits only a gone list, and no current list of that name in any class, no longer compiles.
+        self.changed_calls = {}
+        self.live_all = {}
+        for cn in sorted(new):
+            for m, ss in new[cn]['methods'].items():
+                self.live_all.setdefault(m, []).extend((s['params'], s.get('req', len(s['params']))) for s in ss if not s.get('obsolete'))
+        for cn in sorted(old):
+            if cn not in new:
+                continue
+            for m, ss in old[cn]['methods'].items():
+                _, now = find_method(new, cn, m)
+                if not now:
+                    continue
+                kept = [n['params'] for n in now]
+                gone = [(s['params'], s.get('req', len(s['params']))) for s in ss if not s.get('obsolete') and s['params'] not in kept]
+                if gone and m not in self.changed_calls:
+                    self.changed_calls[m] = (cn + '.' + m, gone, [n['params'] for n in now if not n.get('obsolete')])
+
     def descendants(self, cn):
         out, todo = [], [cn]
         seen = set()
@@ -361,6 +380,16 @@ def diff_checks(vd, rel, src, cls, modclasses, mod_own, mod_overrides, add):
             continue
         if t not in own:
             add('RISK', 'uses ' + vd.removed_members[t] + ', removed in ' + vd.label, rel)
+    for t in toks & set(vd.changed_calls):
+        if t in own:
+            continue
+        where, gone, now = vd.changed_calls[t]
+        live = vd.live_all.get(t, [])
+        calls = [c for c in call_types(body, t, skip_super=True) if not any(sig_fits(c, q, r) for q, r in live)]
+        bad = [p for p, r in gone if any(sig_fits(c, p, r) for c in calls)]
+        if bad:
+            add('BREAK', 'calls ' + where + '() the old way (' + ', '.join(bad[0]) + '); ' + vd.label + ' has only '
+                + ' | '.join('(' + ', '.join(n) + ')' for n in now) + ': the call does not compile', rel)
     for t in toks & vd.removed_classes:
         if t in GENERIC and not re.search(GENERIC[t], body):
             continue

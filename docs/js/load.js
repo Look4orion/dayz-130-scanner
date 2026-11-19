@@ -1,5 +1,5 @@
-import { extractScripts } from './pbo.js?v=202611182257';
-import { decodeText } from './pyre.js?v=202611182257';
+import { extractScripts } from './pbo.js?v=202611190021';
+import { decodeText } from './pyre.js?v=202611190021';
 
 export async function loadMod(mod, rel = (pbo, name) => pbo + '/' + name) {
   const out = { id: mod.id, mod: mod.mod, kind: mod.kind, files: [], pbos: [] };

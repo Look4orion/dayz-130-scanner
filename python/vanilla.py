@@ -125,7 +125,7 @@ def build(root):
     # Workbench-only types (1.30.164200: class Workbench): game scripts can't use them
     ix = {k: v for k, v in ix.items() if k not in wb}
     data = {k: {'base': v['base'],
-                'methods': {m: [{'ret': s['ret'], 'params': list(s['params']), 'obsolete': s['obsolete'],
+                'methods': {m: [{'ret': s['ret'], 'params': list(s['params']), 'req': s['req'], 'obsolete': s['obsolete'],
                                  'access': s['access']} for s in ss] for m, ss in v['methods'].items()},
                 'fields': sorted(v['fields'])} for k, v in ix.items()}
     print(len(ix), 'classes', sum(len(v['methods']) for v in ix.values()), 'methods')

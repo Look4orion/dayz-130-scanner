@@ -29,6 +29,11 @@ mod's own, keep both branches). Comments are ignored.
 **Stable** (`BREAK`, `RISK`, `INFO`), compared with the build before it:
 - **Overrides** of a vanilla method that is gone in 1.30, or whose signature or return type changed.
   Only reported when the mod's signature matched the build before, which filters parser noise.
+- **Calls made the old way** to a vanilla method whose parameters changed: a call that fits a
+  parameter list the new build dropped, and no current list of that name in any vanilla class, does
+  not compile (`BREAK`). Default values count, so a call that still fits because a new parameter
+  has a default isn't reported. Calls to a method of the same name the mod declares itself, and
+  `super.` calls inside an override (the override is reported already), don't count.
 - **Name clashes with methods vanilla added in 1.30.** A mod method (not `override`) with the same
   name as a new vanilla method in an ancestor class, or (for `modded class X`) in any subclass of X.
   This is what breaks Code Lock's `ItemBase.GetCodeLock()` against 1.30's `Fence.GetCodeLock()`.
@@ -140,7 +145,8 @@ declare; needs the vanilla config files unpacked).
 code) of up to four builds, by role: `stable` (the current stable build), `previous` (the build
 stable is compared against), `hotfix` (the stable build the current one replaced, when that was a
 hotfix of the same version) and `exp` (the open experimental build, when there is one newer than
-stable). `versions` names the build in each role. A build is read from the `scripts.pbo` in that
+stable). `versions` names the build in each role. Each method signature carries `req`, how many
+of its parameters have no default. A build is read from the `scripts.pbo` in that
 install's `dta` folder (server or client), or an unpacked scripts folder.
 
 ## Updating for a new DayZ build

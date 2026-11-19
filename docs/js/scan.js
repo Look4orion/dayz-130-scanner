@@ -1,6 +1,6 @@
 // Port of python/scan130.py.
-import { re, search, finditer, findall, fullmatch, countChar, strip as pyStrip } from './pyre.js?v=202611182257';
-import { parse, strip, preprocess, nocomment, definesFor } from './enfparse.js?v=202611182257';
+import { re, search, finditer, findall, fullmatch, countChar, strip as pyStrip } from './pyre.js?v=202611190021';
+import { parse, strip, preprocess, nocomment, definesFor } from './enfparse.js?v=202611190021';
 
 const LEVELS = ['BREAK', 'RISK', 'INFO'];
 
@@ -178,7 +178,7 @@ function argType(src, pos, a) {
 
 // Argument types (see argType) of the calls to name() in stripped src, as arrays, without repeats.
 // A type word before the name makes it a definition.
-function callTypes(src, name) {
+function callTypes(src, name, skipSuper = false) {
   const out = new Map();
   for (const m of finditer(re('\\b' + name + '\\s*\\('), src)) {
     let k = m.index - 1;
@@ -188,6 +188,7 @@ function callTypes(src, name) {
       while (w >= 0 && isWord(src[w])) w -= 1;
       if (!CALL_KW.has(src.slice(w + 1, k + 1))) continue;
     }
+    if (skipSuper && src.slice(Math.max(0, k - 5), k + 1) === 'super.') continue;
     const a = callArgs(src, m.index + m[0].length - 1);
     if (a === null) continue;
     const types = a.length === 1 && !pyStrip(a[0]) ? [] : a.map((x) => argType(src, m.index, x));
@@ -304,6 +305,26 @@ export function makeScanner(vanilla) {
         const live = ss.filter((s) => !s.obsolete).map((s) => s.params);
         d.liveSigs.get(m).push(...live);
         if (live.length && !d.liveClass.has(m)) d.liveClass.set(m, cn);
+      }
+    }
+    // methods whose parameter lists changed: name -> ["Class.method", [[old params, req] gone in new], [current params]];
+    // a call that fits only a gone list, and no current list of that name in any class, no longer compiles
+    d.changedCalls = new Map();
+    d.liveAll = new Map();
+    for (const cn of [...neu.keys()].sort()) {
+      for (const [m, ss] of neu.get(cn).methods) {
+        if (!d.liveAll.has(m)) d.liveAll.set(m, []);
+        d.liveAll.get(m).push(...ss.filter((s) => !s.obsolete).map((s) => [s.params, s.req ?? s.params.length]));
+      }
+    }
+    for (const cn of [...old.keys()].sort()) {
+      if (!neu.has(cn)) continue;
+      for (const [m, ss] of old.get(cn).methods) {
+        const now = findMethod(neu, cn, m)[1];
+        if (!now) continue;
+        const kept = new Set(now.map((n) => JSON.stringify(n.params)));
+        const gone = ss.filter((s) => !s.obsolete && !kept.has(JSON.stringify(s.params))).map((s) => [s.params, s.req ?? s.params.length]);
+        if (gone.length && !d.changedCalls.has(m)) d.changedCalls.set(m, [cn + '.' + m, gone, now.filter((n) => !n.obsolete).map((n) => n.params)]);
       }
     }
     d.obsCalled = (key, params) => {
@@ -463,6 +484,16 @@ export function makeScanner(vanilla) {
     for (const t of toks) {
       if (vd.removedMembers.has(t)) {
         if (!(GENERIC.has(t) && !search(GENERIC.get(t), body)) && !own.has(t)) add('RISK', 'uses ' + vd.removedMembers.get(t) + ', removed in ' + vd.label, rel);
+      }
+      if (vd.changedCalls.has(t) && !own.has(t)) {
+        const [where, gone, now] = vd.changedCalls.get(t);
+        const live = vd.liveAll.get(t) || [];
+        const calls = callTypes(body, t, true).filter((c) => !live.some(([q, r]) => sigFits(c, q, r)));
+        const bad = gone.filter(([p, r]) => calls.some((c) => sigFits(c, p, r))).map(([p]) => p);
+        if (bad.length) {
+          add('BREAK', 'calls ' + where + '() the old way (' + bad[0].join(', ') + '); ' + vd.label + ' has only '
+            + now.map((n) => '(' + n.join(', ') + ')').join(' | ') + ': the call does not compile', rel);
+        }
       }
       if (vd.removedClasses.has(t) && !(vd.wbOnly.has(t) && (!moduleRank(rel) || search(WORKBENCH_DIR, rel)))) {
         if (!(GENERIC.has(t) && !search(GENERIC.get(t), body)) && !own.has(t)) add('RISK', 'uses class ' + t + ', removed in ' + vd.label, rel);

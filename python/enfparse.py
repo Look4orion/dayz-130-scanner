@@ -161,9 +161,11 @@ def _method(cur, text):
     obsolete = bool(re.search(r'\[\s*Obsolete', head))
     pre = mm.group(1).split()
     ret = [t for t in pre if t not in MODS and t not in (']', '[')]
+    raw = [p for p in split_top(mm.group(3)) if p.strip()]
     cur['methods'].setdefault(mm.group(2), []).append({
         'ret': ' '.join(ret).lower(),
-        'params': tuple(norm_param(p) for p in split_top(mm.group(3)) if p.strip()),
+        'params': tuple(norm_param(p) for p in raw),
+        'req': sum('=' not in p for p in raw),
         'override': 'override' in pre,
         'static': 'static' in pre,
         'obsolete': obsolete,
