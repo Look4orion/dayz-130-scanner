@@ -1,5 +1,5 @@
 // Port of python/enfparse.py.
-import { re, search, finditer, findall, fullmatch, strip as pstrip, lstrip, splitWs, countChar } from './pyre.js?v=202611190021';
+import { re, search, finditer, findall, fullmatch, strip as pstrip, lstrip, splitWs, countChar } from './pyre.js?v=202611200034';
 
 const MODS = new Set(['override', 'static', 'proto', 'native', 'private', 'protected', 'event', 'external', 'volatile',
   'owned', 'ref', 'reference', 'notnull', 'const', 'autoptr', 'sealed', 'modded', 'extern']);
@@ -184,6 +184,23 @@ function addMethod(cur, text) {
   return true;
 }
 
+// A line that starts a new member declaration: modifiers, a type (with template), then a name.
+const DECL_START = re('^(?:(?:protected|private|static|const|ref|autoptr|owned|notnull|reference)\\s+)*'
+  + '[A-Za-z_]\\w*(?:\\s*<.*>)?\\s+[A-Za-z_]\\w*\\s*(?:\\[[^\\]]*\\])?\\s*(?:=|$)');
+const ENDS_NAME = re('\\w\\s*$');
+
+// Split a member statement where vanilla left out a ';' (1.30: "...> m_ConstructionParts //! ...data;"):
+// a line ending in a name, followed by a line that starts a new declaration, ends a declaration.
+function declLines(st) {
+  const lines = st.split('\n');
+  const out = [lines[0]];
+  for (const ln of lines.slice(1)) {
+    if (search(ENDS_NAME, out[out.length - 1]) && search(DECL_START, pstrip(ln))) out.push(ln);
+    else out[out.length - 1] += '\n' + ln;
+  }
+  return out;
+}
+
 export function parse(src, defines = null) {
   const s = strip(defines ? preprocess(src, defines) : src);
   const n = s.length;
@@ -238,10 +255,12 @@ export function parse(src, defines = null) {
         const st = pstrip(buf);
         if (st.split('=')[0].includes('(') && addMethod(cur, st)) {
         } else if (st && !st.startsWith('typedef') && !st.startsWith('enum')) {
-          const left = st.split('=')[0];
-          for (const part of splitTop(left)) {
-            const ids = findall(FIELD, pstrip(part));
-            if (ids.length) cur.fields.add(ids[ids.length - 1]);
+          for (const decl of declLines(st)) {
+            const left = decl.split('=')[0];
+            for (const part of splitTop(left)) {
+              const ids = findall(FIELD, pstrip(part));
+              if (ids.length) cur.fields.add(ids[ids.length - 1]);
+            }
           }
         }
       }

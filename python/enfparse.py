@@ -174,6 +174,24 @@ def _method(cur, text):
     return True
 
 
+# A line that starts a new member declaration: modifiers, a type (with template), then a name.
+DECL_START = re.compile(r'^(?:(?:protected|private|static|const|ref|autoptr|owned|notnull|reference)\s+)*'
+                        r'[A-Za-z_]\w*(?:\s*<.*>)?\s+[A-Za-z_]\w*\s*(?:\[[^\]]*\])?\s*(?:=|$)')
+
+
+def decl_lines(st):
+    """Split a member statement where vanilla left out a ';' (1.30: "...> m_ConstructionParts //! ...data;"):
+    a line ending in a name, followed by a line that starts a new declaration, ends a declaration."""
+    lines = st.split('\n')
+    out = [lines[0]]
+    for ln in lines[1:]:
+        if re.search(r'\w\s*$', out[-1]) and DECL_START.match(ln.strip()):
+            out.append(ln)
+        else:
+            out[-1] += '\n' + ln
+    return out
+
+
 def parse(src, defines=None):
     """`defines` ({name: bool}, e.g. V130) drops the #ifdef branches that version would not compile."""
     s = strip(preprocess(src, defines) if defines else src)
@@ -228,11 +246,12 @@ def parse(src, defines=None):
                 if '(' in st.split('=')[0] and _method(cur, st):
                     pass
                 elif st and not st.startswith(('typedef', 'enum')):
-                    left = st.split('=')[0]
-                    for part in split_top(left):
-                        ids = re.findall(r'\b(\w+)\b(?:\s*\[[^\]]*\])?\s*$', part.strip())
-                        if ids:
-                            cur['fields'].add(ids[-1])
+                    for decl in decl_lines(st):
+                        left = decl.split('=')[0]
+                        for part in split_top(left):
+                            ids = re.findall(r'\b(\w+)\b(?:\s*\[[^\]]*\])?\s*$', part.strip())
+                            if ids:
+                                cur['fields'].add(ids[-1])
             buf = ''
             i += 1
             continue
