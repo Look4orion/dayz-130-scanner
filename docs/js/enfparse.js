@@ -1,5 +1,5 @@
 // Port of python/enfparse.py.
-import { re, search, finditer, findall, fullmatch, strip as pstrip, lstrip, splitWs, countChar } from './pyre.js?v=202611200034';
+import { re, search, finditer, findall, fullmatch, strip as pstrip, lstrip, splitWs, countChar } from './pyre.js?v=202611262101';
 
 const MODS = new Set(['override', 'static', 'proto', 'native', 'private', 'protected', 'event', 'external', 'volatile',
   'owned', 'ref', 'reference', 'notnull', 'const', 'autoptr', 'sealed', 'modded', 'extern']);
